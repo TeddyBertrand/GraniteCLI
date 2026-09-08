@@ -84,6 +84,8 @@ impl Agent {
                     if attempts > MAX_PROVIDER_RETRIES {
                         return Err(AgentError::Provider(err));
                     }
+                    let delay = std::time::Duration::from_millis(500) * attempts as u32;
+                    tokio::time::sleep(delay).await;
                 }
             }
         }
