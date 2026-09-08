@@ -57,15 +57,9 @@ Agent's hands — local system actions.
 - File tools (`fs.rs`), filtering irrelevant dirs via `ignore`.
 - Shell exec tool (`bash.rs`) with validation/safety mechanisms.
 
----
+## 4. Next Steps
 
-## 4. Current Status
-
-Workspace skeleton only (`squelette.sh` scaffolded empty files) — no implementation yet. `Cargo.toml` workspace manifest and crate manifests present but not filled in.
-
-## 5. Next Steps
-
-- Fill in workspace `Cargo.toml` (members, shared deps/versions).
+- Fill in workspace `Cargo.toml` (members, shared deps/versions). (Done)
 - Define `trait LlmProvider` in `provider/src/traits.rs`.
 - Define `trait Tool` in `tools/src/traits.rs`.
 - Implement Groq provider first (simplest free API) as reference impl.
