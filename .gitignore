@@ -6,9 +6,7 @@ Cargo.lock
 .env.*
 *.env
 
-# nix (personal dev shell, not shared)
-flake.nix
-flake.lock
+# nix
 result
 result-*
 .direnv/
