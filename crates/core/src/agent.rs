@@ -118,7 +118,7 @@ impl Agent {
             tool_call_id: None,
         });
 
-        for _ in 0..self.max_iterations {
+        for i in 0..self.max_iterations {
             let req = ChatRequest {
                 messages: self.context.messages().to_vec(),
                 tools: self.tool_definitions(),
@@ -131,6 +131,20 @@ impl Agent {
 
             if resp.finish_reason != FinishReason::ToolCalls {
                 return Ok(message.content.unwrap_or_default());
+            }
+
+            if i + 1 == self.max_iterations {
+                // model asked for tool calls but we're stopping now — respond to each
+                // so no tool call is left dangling in history for future requests.
+                for call in &message.tool_calls {
+                    self.context.push(Message {
+                        role: Role::Tool,
+                        content: Some("error: max iterations reached before tool could run".to_string()),
+                        tool_calls: vec![],
+                        tool_call_id: Some(call.id.clone()),
+                    });
+                }
+                break;
             }
 
             for call in &message.tool_calls {
