@@ -105,3 +105,4 @@ Currently just the project name. Fill in once #11 gives a working binary — ins
 - **Milestone "MVP CLI"**: #4, #6, #9, #10, #11, #12
 - **Milestone "Polish"**: #7, #13, #14, #15, #16
 smoke test 1788861561
+e2e 1788862088
