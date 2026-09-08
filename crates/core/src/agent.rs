@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use futures_util::future::join_all;
 use provider::{ChatRequest, FinishReason, LlmProvider, Message, ProviderError, Role, ToolDefinition};
 use thiserror::Error;
 use tools::{Tool, ToolError};
@@ -147,8 +148,8 @@ impl Agent {
                 break;
             }
 
-            for call in &message.tool_calls {
-                let tool_msg = self.dispatch_tool_call(call).await;
+            let tool_msgs = join_all(message.tool_calls.iter().map(|call| self.dispatch_tool_call(call))).await;
+            for tool_msg in tool_msgs {
                 self.context.push(tool_msg);
             }
         }
