@@ -13,3 +13,6 @@ thiserror.workspace = true
 
 provider.workspace = true
 tools.workspace = true
+
+[dev-dependencies]
+futures-core.workspace = true
