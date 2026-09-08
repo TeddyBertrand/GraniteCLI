@@ -40,6 +40,10 @@ Package names are `granite-*` but dependency keys stay `core`/`provider`/`tools`
 - One feature/change per commit — don't mix unrelated changes. Never bundle by file-count, always by feature (2 features touching 2 files each = 2 commits, not 1).
 - 3-4 files is a max cap, not a target: if one feature spans more files than that, split it into multiple commits.
 
+## PR rules
+
+- No "Generated with Claude Code" / co-author / attribution footer in PR title or body. PR content only.
+
 ## Docs
 
 - `docs/PROJECT.md` — goals, stack rationale, architecture, status/next-steps. Keep it in sync with real decisions (not brainstorm.md, which is the original French draft, kept as-is for history).
