@@ -25,6 +25,8 @@ Dependency graph: `cli` → `core` → `provider` + `tools`. Providers/tools cra
 
 Package names are `granite-*` but dependency keys stay `core`/`provider`/`tools` (aliased via `package =` in root `Cargo.toml`) — so `use core::...` etc still works in code.
 
+Exception: `cli` uses `granite_core = { package = "granite-core", ... }` instead of `core.workspace = true` — a dep literally named `core` shadows Rust's sysroot `core` crate in the extern prelude, which breaks any derive macro expanding to unqualified `core::...` (hit this with `clap::Parser`). Use `granite_core::...` in `cli` crate code.
+
 ## Conventions
 
 - **Errors:** `thiserror` typed enums in lib crates (`core`, `provider`, `tools`) — keep them matchable (agent needs to branch on e.g. rate-limit vs auth). `anyhow` only at the `cli` boundary (`main() -> anyhow::Result<()>`).
