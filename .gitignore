@@ -1,0 +1,22 @@
+/target
+Cargo.lock
+
+# env / secrets (API keys for Groq, Gemini, etc.)
+.env
+.env.*
+*.env
+
+# nix (personal dev shell, not shared)
+flake.nix
+flake.lock
+result
+result-*
+.direnv/
+
+# editor
+.vscode/
+.idea/
+*.swp
+
+# os
+.DS_Store
