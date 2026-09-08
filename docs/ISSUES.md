@@ -104,3 +104,4 @@ Currently just the project name. Fill in once #11 gives a working binary — ins
 - **Milestone "Walking skeleton"**: #1, #2, #3, #5, #8 (minimal loop: one provider, one tool, no error polish)
 - **Milestone "MVP CLI"**: #4, #6, #9, #10, #11, #12
 - **Milestone "Polish"**: #7, #13, #14, #15, #16
+smoke test 1788861561
