@@ -20,6 +20,9 @@ pub enum ToolError {
 
     #[error("denied: {0}")]
     Denied(String),
+
+    #[error("timed out after {0:?}")]
+    Timeout(std::time::Duration),
 }
 
 #[async_trait]
