@@ -33,6 +33,7 @@ Exception: `cli` uses `granite_core = { package = "granite-core", ... }` instead
 - **Deps:** pin versions once in root `[workspace.dependencies]`, crates inherit via `dep.workspace = true`. Don't add a dep version directly in a crate's own `Cargo.toml`.
 - **Async:** `tokio` full runtime, `async-trait` for trait methods on `LlmProvider`/`Tool`.
 - Currently skeleton stage — most `.rs` files are stubs/empty. Don't assume implementations exist; check before referencing.
+- **Tests:** put `#[cfg(test)]` unit tests in a sibling `<module>_test.rs` file, wired via `#[path = "<module>_test.rs"] mod tests;` — not inline in the module file. See `crates/provider/src/groq.rs` / `groq_test.rs`.
 
 ## Commit rules
 
