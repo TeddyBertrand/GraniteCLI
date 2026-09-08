@@ -16,6 +16,6 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
-core.workspace = true
+granite_core = { package = "granite-core", path = "../core" }
 provider.workspace = true
 tools.workspace = true

@@ -21,9 +21,11 @@ clap = { version = "4", features = ["derive"] }
 cliclack = "0.3"
 async-trait = "0.1"
 futures-core = "0.3"
+bytes = "1"
 ignore = "0.4"
 thiserror = "1"
 anyhow = "1"
+tempfile = "3"
 
 core = { package = "granite-core", path = "crates/core" }
 provider = { package = "granite-provider", path = "crates/provider" }
