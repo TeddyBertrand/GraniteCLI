@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cli",
+    "crates/core",
+    "crates/provider",
+    "crates/tools",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+cliclack = "0.3"
+async-trait = "0.1"
+futures-core = "0.3"
+ignore = "0.4"
+thiserror = "1"
+anyhow = "1"
+
+core = { package = "granite-core", path = "crates/core" }
+provider = { package = "granite-provider", path = "crates/provider" }
+tools = { package = "granite-tools", path = "crates/tools" }
