@@ -91,10 +91,14 @@ fn build_provider(args: &RunArgs, cfg: &Config) -> anyhow::Result<(Arc<dyn LlmPr
             Ok((Arc::new(groq), model))
         }
         Provider::Gemini => {
-            let gemini = match &args.api_key {
-                Some(key) => provider::gemini::GeminiProvider::new(key.clone()),
-                None => provider::gemini::GeminiProvider::from_env()
-                    .context("no Gemini API key: pass --api-key or set GEMINI_API_KEY")?,
+            let gemini = if let Some(key) = &args.api_key {
+                provider::gemini::GeminiProvider::new(key.clone())
+            } else if let Ok(gemini) = provider::gemini::GeminiProvider::from_env() {
+                gemini
+            } else if let Some(key) = cfg.api_key_for(provider) {
+                provider::gemini::GeminiProvider::new(key.to_string())
+            } else {
+                bail!("no Gemini API key: pass --api-key, set GEMINI_API_KEY, or run `granite config set gemini.api_key <key>`")
             };
             let model = args
                 .model
