@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
+use tempfile::tempdir;
 
 use crate::bash::BashTool;
 use crate::traits::{Tool, ToolError};
@@ -128,6 +129,63 @@ async fn deny_pattern_wins_even_if_allow_pattern_matches() {
 async fn invalid_pattern_regex_is_rejected_at_construction() {
     let err = BashTool::new().with_deny_patterns(&["(unclosed"]);
     assert!(err.is_err());
+}
+
+#[tokio::test]
+async fn destructive_command_without_confirm_hook_is_denied() {
+    let tool = BashTool::new();
+    let err = tool
+        .execute(json!({ "command": "sudo rm -r /tmp/whatever" }))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ToolError::Denied(_)));
+}
+
+#[tokio::test]
+async fn destructive_command_with_confirm_hook_runs_when_allowed() {
+    let tool = BashTool::new().with_confirm_hook(Arc::new(|_cmd: &str| true));
+    let out = tool
+        .execute(json!({ "command": "kill -9 999999" }))
+        .await
+        .unwrap();
+    assert!(out.content.contains("exit code:"));
+}
+
+#[tokio::test]
+async fn destructive_command_with_confirm_hook_denied_when_rejected() {
+    let tool = BashTool::new().with_confirm_hook(Arc::new(|_cmd: &str| false));
+    let err = tool
+        .execute(json!({ "command": "kill -9 999999" }))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ToolError::Denied(_)));
+}
+
+#[tokio::test]
+async fn non_destructive_command_runs_without_confirm_hook() {
+    let tool = BashTool::new();
+    let out = tool.execute(json!({ "command": "echo hi" })).await.unwrap();
+    assert!(out.content.contains("hi"));
+}
+
+#[tokio::test]
+async fn sandboxed_command_runs_in_sandbox_dir() {
+    let dir = tempdir().unwrap();
+    let tool = BashTool::new().with_sandbox_dir(dir.path()).unwrap();
+    let out = tool.execute(json!({ "command": "pwd" })).await.unwrap();
+    let canonical = dir.path().canonicalize().unwrap();
+    assert!(out.content.contains(canonical.to_str().unwrap()));
+}
+
+#[tokio::test]
+async fn sandboxed_command_rejects_path_traversal() {
+    let dir = tempdir().unwrap();
+    let tool = BashTool::new().with_sandbox_dir(dir.path()).unwrap();
+    let err = tool
+        .execute(json!({ "command": "cat ../secret" }))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ToolError::Denied(_)));
 }
 
 #[tokio::test]

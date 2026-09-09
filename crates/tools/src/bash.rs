@@ -39,6 +39,23 @@ const DEFAULT_DENY_PATTERNS: &[&str] = &[
     r"\bTRUNCATE\s+TABLE\b",
 ];
 
+/// Commands that are allowed to run but require an explicit confirm hook.
+/// If no confirm hook is wired, these are denied outright (fail safe).
+const DESTRUCTIVE_PATTERNS: &[&str] = &[
+    r"rm\s+-\w*r\w*",
+    r"\bsudo\b",
+    r"chmod\s+-R\b",
+    r"chown\s+-R\b",
+    r">\s*[^&]",
+    r"\bkill\s+-9\b",
+    r"(npm|cargo)\s+publish\b",
+    r"docker\s+(rm|rmi)\s+-f\b",
+    r"kubectl\s+delete\b",
+    r"git\s+push\s+.*--force",
+    r"(apt|apt-get)\s+(remove|purge)\b",
+    r"pip\d?\s+uninstall\b",
+];
+
 fn compile(patterns: &[&str]) -> Vec<Regex> {
     patterns
         .iter()
@@ -55,6 +72,8 @@ pub struct BashTool {
     confirm: Option<ConfirmHook>,
     deny_patterns: Vec<Regex>,
     allow_patterns: Vec<Regex>,
+    destructive_patterns: Vec<Regex>,
+    sandbox_dir: Option<std::path::PathBuf>,
 }
 
 impl BashTool {
@@ -64,6 +83,8 @@ impl BashTool {
             confirm: None,
             deny_patterns: compile(DEFAULT_DENY_PATTERNS),
             allow_patterns: Vec::new(),
+            destructive_patterns: compile(DESTRUCTIVE_PATTERNS),
+            sandbox_dir: None,
         }
     }
 
@@ -95,6 +116,28 @@ impl BashTool {
             self.allow_patterns.push(Regex::new(&format!("(?i){p}"))?);
         }
         Ok(self)
+    }
+
+    /// Restricts execution to a working directory. The directory must exist;
+    /// it is canonicalized once at construction. This is a best-effort
+    /// sandbox (it chdirs the child process and rejects `..` path
+    /// traversal in the command text) — not an OS-level jail.
+    pub fn with_sandbox_dir(mut self, dir: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
+        self.sandbox_dir = Some(dir.as_ref().canonicalize()?);
+        Ok(self)
+    }
+
+    fn is_destructive(&self, cmd: &str) -> bool {
+        self.destructive_patterns.iter().any(|p| p.is_match(cmd))
+    }
+
+    fn check_sandbox_escape(cmd: &str) -> Result<(), ToolError> {
+        if cmd.contains("..") {
+            return Err(ToolError::Denied(
+                "command contains '..' path traversal, rejected under sandbox".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     fn check_patterns(&self, cmd: &str) -> Result<(), ToolError> {
@@ -154,19 +197,34 @@ impl Tool for BashTool {
 
         self.check_patterns(command)?;
 
+        if self.sandbox_dir.is_some() {
+            Self::check_sandbox_escape(command)?;
+        }
+
+        if self.is_destructive(command) && self.confirm.is_none() {
+            return Err(ToolError::Denied(
+                "destructive command requires a confirmation hook".to_string(),
+            ));
+        }
+
         if let Some(confirm) = &self.confirm {
             if !confirm(command) {
                 return Err(ToolError::Denied("rejected by confirmation hook".to_string()));
             }
         }
 
-        let child = Command::new("sh")
-            .arg("-c")
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
             .arg(command)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+            .stderr(Stdio::piped());
+
+        if let Some(dir) = &self.sandbox_dir {
+            cmd.current_dir(dir);
+        }
+
+        let child = cmd.spawn()?;
 
         let output = match tokio::time::timeout(self.timeout, child.wait_with_output()).await {
             Ok(result) => result?,
