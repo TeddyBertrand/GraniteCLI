@@ -46,7 +46,18 @@ fn build_provider(args: &RunArgs) -> anyhow::Result<(Arc<dyn LlmProvider>, Strin
                 .unwrap_or_else(|| provider::groq::DEFAULT_MODEL.to_string());
             Ok((Arc::new(groq), model))
         }
-        Provider::Gemini => bail!("Gemini provider not implemented yet"),
+        Provider::Gemini => {
+            let gemini = match &args.api_key {
+                Some(key) => provider::gemini::GeminiProvider::new(key.clone()),
+                None => provider::gemini::GeminiProvider::from_env()
+                    .context("no Gemini API key: pass --api-key or set GEMINI_API_KEY")?,
+            };
+            let model = args
+                .model
+                .clone()
+                .unwrap_or_else(|| provider::gemini::DEFAULT_MODEL.to_string());
+            Ok((Arc::new(gemini), model))
+        }
         Provider::Ollama => bail!("Ollama provider not implemented yet"),
     }
 }
