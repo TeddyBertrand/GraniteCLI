@@ -15,6 +15,7 @@ cliclack.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 
 granite_core = { package = "granite-core", path = "../core" }
 provider.workspace = true
