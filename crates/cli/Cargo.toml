@@ -14,6 +14,7 @@ clap.workspace = true
 cliclack.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
+futures-util.workspace = true
 tui-markdown.workspace = true
 ratatui-core.workspace = true
 anyhow.workspace = true
