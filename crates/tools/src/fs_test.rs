@@ -117,3 +117,61 @@ async fn list_dir_missing_path_arg_is_invalid_args() {
     let err = tool.execute(json!({})).await.unwrap_err();
     assert!(matches!(err, ToolError::InvalidArgs(_)));
 }
+
+#[tokio::test]
+async fn list_dir_nonexistent_path_is_io_error() {
+    let tool = ListDirTool;
+    let err = tool
+        .execute(json!({ "path": "/nonexistent/dir/does-not-exist" }))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ToolError::Io(_)));
+}
+
+#[tokio::test]
+async fn write_overwrites_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("out.txt");
+    tokio::fs::write(&file_path, "old content").await.unwrap();
+
+    let tool = WriteFileTool;
+    tool.execute(json!({
+        "path": file_path.to_str().unwrap(),
+        "content": "new content"
+    }))
+    .await
+    .unwrap();
+
+    let written = tokio::fs::read_to_string(&file_path).await.unwrap();
+    assert_eq!(written, "new content");
+}
+
+#[tokio::test]
+async fn writes_empty_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("empty.txt");
+
+    let tool = WriteFileTool;
+    let out = tool
+        .execute(json!({
+            "path": file_path.to_str().unwrap(),
+            "content": ""
+        }))
+        .await
+        .unwrap();
+
+    assert!(out.content.contains("wrote 0 bytes"));
+    let written = tokio::fs::read_to_string(&file_path).await.unwrap();
+    assert_eq!(written, "");
+}
+
+#[tokio::test]
+async fn list_dir_on_empty_dir_returns_empty_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let tool = ListDirTool;
+    let out = tool
+        .execute(json!({ "path": dir.path().to_str().unwrap() }))
+        .await
+        .unwrap();
+    assert_eq!(out.content, "");
+}

@@ -6,14 +6,6 @@ Guidance for Claude Code working in this repo. See `docs/PROJECT.md` for full pr
 
 GraniteCLI — Rust CLI agent (ReAct loop) driving free/open LLM providers (Groq, Gemini, Ollama). Cargo workspace, 4 crates.
 
-## Environment
-
-NixOS. `cargo`/`rustc` not on default PATH — use the flake:
-```
-nix develop
-```
-then `cargo build` / `cargo run -p granite-cli` inside that shell.
-
 ## Workspace layout
 
 - `crates/cli` (pkg `granite-cli`, bin `granite`) — clap + cliclack, entry point / UI only.
@@ -46,6 +38,16 @@ Exception: `cli` uses `granite_core = { package = "granite-core", ... }` instead
 ## PR rules
 
 - No "Generated with Claude Code" / co-author / attribution footer in PR title or body. PR content only.
+
+## CI
+
+`.github/workflows/ci.yml` gates PRs into `dev`/`main`: `cargo build`, `cargo test`, `cargo clippy -- -D warnings`, all run inside the Nix devshell (`nix develop -c ...`) via `cachix/install-nix-action`. Clippy warnings fail the check — fix warnings, don't allow them.
+
+## Release
+
+Distribution: GitHub release binaries only (no crates.io/cargo-install path). `.github/workflows/release.yml` triggers on tag push matching `v*.*.*`, cross-builds `granite` for `x86_64`/`aarch64` on Linux and macOS, and uploads `.tar.gz` archives to a GitHub release via `softprops/action-gh-release`.
+
+Versioning: semver, workspace-shared (`[workspace.package].version` in root `Cargo.toml`). Cutting a release: bump that version, commit, then push a `vX.Y.Z` tag matching it exactly.
 
 ## Docs
 
