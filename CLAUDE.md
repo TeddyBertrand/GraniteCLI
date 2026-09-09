@@ -39,6 +39,16 @@ Exception: `cli` uses `granite_core = { package = "granite-core", ... }` instead
 
 - No "Generated with Claude Code" / co-author / attribution footer in PR title or body. PR content only.
 
+## CI
+
+`.github/workflows/ci.yml` gates PRs into `dev`/`main`: `cargo build`, `cargo test`, `cargo clippy -- -D warnings`, all run inside the Nix devshell (`nix develop -c ...`) via `cachix/install-nix-action`. Clippy warnings fail the check — fix warnings, don't allow them.
+
+## Release
+
+Distribution: GitHub release binaries only (no crates.io/cargo-install path). `.github/workflows/release.yml` triggers on tag push matching `v*.*.*`, cross-builds `granite` for `x86_64`/`aarch64` on Linux and macOS, and uploads `.tar.gz` archives to a GitHub release via `softprops/action-gh-release`.
+
+Versioning: semver, workspace-shared (`[workspace.package].version` in root `Cargo.toml`). Cutting a release: bump that version, commit, then push a `vX.Y.Z` tag matching it exactly.
+
 ## Docs
 
 - `docs/PROJECT.md` — goals, stack rationale, architecture, status/next-steps. Keep it in sync with real decisions (not brainstorm.md, which is the original French draft, kept as-is for history).

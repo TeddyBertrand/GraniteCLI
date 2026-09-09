@@ -1,8 +1,9 @@
 mod args;
+mod config;
 
 use std::sync::Arc;
 
-use anyhow::{bail, Context};
+use anyhow::bail;
 use clap::Parser;
 use granite_core::agent::Agent;
 use provider::LlmProvider;
@@ -10,6 +11,7 @@ use tools::bash::BashTool;
 use tools::fs::{ListDirTool, ReadFileTool, WriteFileTool};
 
 use args::{Cli, Commands, ConfigAction, Provider, RunArgs};
+use config::Config;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -23,22 +25,64 @@ async fn main() -> anyhow::Result<()> {
     })) {
         Commands::Run(args) => run(args).await,
         Commands::Config(args) => match args.action {
-            ConfigAction::Show | ConfigAction::Set { .. } => {
-                bail!("config command not implemented yet")
-            }
+            ConfigAction::Show => show_config(),
+            ConfigAction::Set { key, value } => set_config(&key, &value),
         },
     }
 }
 
-fn build_provider(args: &RunArgs) -> anyhow::Result<(Arc<dyn LlmProvider>, String)> {
+fn show_config() -> anyhow::Result<()> {
+    let cfg = Config::load()?;
+    println!("default_provider = {:?}", cfg.default_provider);
+    println!("default_model = {:?}", cfg.default_model);
+    println!(
+        "groq.api_key = {}",
+        cfg.groq
+            .api_key
+            .as_deref()
+            .map(config::mask)
+            .unwrap_or_else(|| "<unset>".to_string())
+    );
+    println!(
+        "gemini.api_key = {}",
+        cfg.gemini
+            .api_key
+            .as_deref()
+            .map(config::mask)
+            .unwrap_or_else(|| "<unset>".to_string())
+    );
+    println!(
+        "ollama.api_key = {}",
+        cfg.ollama
+            .api_key
+            .as_deref()
+            .map(config::mask)
+            .unwrap_or_else(|| "<unset>".to_string())
+    );
+    Ok(())
+}
+
+fn set_config(key: &str, value: &str) -> anyhow::Result<()> {
+    let mut cfg = Config::load()?;
+    cfg.set(key, value)?;
+    cfg.save()?;
+    println!("set {key}");
+    Ok(())
+}
+
+fn build_provider(args: &RunArgs, cfg: &Config) -> anyhow::Result<(Arc<dyn LlmProvider>, String)> {
     let provider = args.provider.unwrap_or(Provider::Groq);
 
     match provider {
         Provider::Groq => {
-            let groq = match &args.api_key {
-                Some(key) => provider::groq::GroqProvider::new(key.clone()),
-                None => provider::groq::GroqProvider::from_env()
-                    .context("no Groq API key: pass --api-key or set GROQ_API_KEY")?,
+            let groq = if let Some(key) = &args.api_key {
+                provider::groq::GroqProvider::new(key.clone())
+            } else if let Ok(groq) = provider::groq::GroqProvider::from_env() {
+                groq
+            } else if let Some(key) = cfg.api_key_for(provider) {
+                provider::groq::GroqProvider::new(key.to_string())
+            } else {
+                bail!("no Groq API key: pass --api-key, set GROQ_API_KEY, or run `granite config set groq.api_key <key>`")
             };
             let model = args
                 .model
@@ -63,7 +107,8 @@ fn build_provider(args: &RunArgs) -> anyhow::Result<(Arc<dyn LlmProvider>, Strin
 }
 
 async fn run(args: RunArgs) -> anyhow::Result<()> {
-    let (provider, model) = build_provider(&args)?;
+    let cfg = Config::load()?;
+    let (provider, model) = build_provider(&args, &cfg)?;
 
     cliclack::intro("granite")?;
 

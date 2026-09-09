@@ -29,6 +29,7 @@ thiserror = "1"
 anyhow = "1"
 tempfile = "3"
 regex = "1"
+toml = "0.8"
 
 core = { package = "granite-core", path = "crates/core" }
 provider = { package = "granite-provider", path = "crates/provider" }
