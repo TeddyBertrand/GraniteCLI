@@ -107,7 +107,14 @@ fn build_provider(args: &RunArgs, cfg: &Config) -> anyhow::Result<(Arc<dyn LlmPr
                 .unwrap_or_else(|| provider::gemini::DEFAULT_MODEL.to_string());
             Ok((Arc::new(gemini), model))
         }
-        Provider::Ollama => bail!("Ollama provider not implemented yet"),
+        Provider::Ollama => {
+            let ollama = provider::ollama::OllamaProvider::from_env();
+            let model = args
+                .model
+                .clone()
+                .unwrap_or_else(|| provider::ollama::DEFAULT_MODEL.to_string());
+            Ok((Arc::new(ollama), model))
+        }
     }
 }
 
