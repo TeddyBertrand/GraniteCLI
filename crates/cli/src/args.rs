@@ -45,10 +45,7 @@ pub enum ConfigAction {
     /// Print current configuration.
     Show,
     /// Set a configuration value.
-    Set {
-        key: String,
-        value: String,
-    },
+    Set { key: String, value: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
