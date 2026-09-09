@@ -74,6 +74,63 @@ async fn confirm_hook_is_called_with_command_and_can_allow() {
 }
 
 #[tokio::test]
+async fn deny_listed_git_force_push_is_denied() {
+    let tool = BashTool::new();
+    let err = tool
+        .execute(json!({ "command": "git push --force origin main" }))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ToolError::Denied(_)));
+}
+
+#[tokio::test]
+async fn custom_deny_pattern_is_enforced() {
+    let tool = BashTool::new()
+        .with_deny_patterns(&[r"\bcargo\s+publish\b"])
+        .unwrap();
+    let err = tool
+        .execute(json!({ "command": "cargo publish" }))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ToolError::Denied(_)));
+}
+
+#[tokio::test]
+async fn allow_pattern_permits_matching_command() {
+    let tool = BashTool::new().with_allow_patterns(&[r"^echo\s"]).unwrap();
+    let out = tool.execute(json!({ "command": "echo hi" })).await.unwrap();
+    assert!(out.content.contains("hi"));
+}
+
+#[tokio::test]
+async fn allow_pattern_denies_non_matching_command() {
+    let tool = BashTool::new().with_allow_patterns(&[r"^echo\s"]).unwrap();
+    let err = tool
+        .execute(json!({ "command": "ls -la" }))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ToolError::Denied(_)));
+}
+
+#[tokio::test]
+async fn deny_pattern_wins_even_if_allow_pattern_matches() {
+    let tool = BashTool::new()
+        .with_allow_patterns(&[r"^git\s"])
+        .unwrap();
+    let err = tool
+        .execute(json!({ "command": "git reset --hard HEAD~1" }))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ToolError::Denied(_)));
+}
+
+#[tokio::test]
+async fn invalid_pattern_regex_is_rejected_at_construction() {
+    let err = BashTool::new().with_deny_patterns(&["(unclosed"]);
+    assert!(err.is_err());
+}
+
+#[tokio::test]
 async fn command_exceeding_timeout_is_timeout_error() {
     let tool = BashTool::new().with_timeout(Duration::from_millis(50));
     let err = tool
