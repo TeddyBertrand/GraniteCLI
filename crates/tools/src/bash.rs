@@ -11,36 +11,27 @@ use crate::traits::{Tool, ToolError, ToolOutput};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Built-in deny patterns, grouped by category. All case-insensitive.
-/// Callers can layer more via `with_deny_patterns`; these always apply.
 const DEFAULT_DENY_PATTERNS: &[&str] = &[
-    // filesystem destruction
     r"rm\s+(-\w*r\w*f\w*|-\w*f\w*r\w*)\s+/(\s|$|\*)",
     r"rm\s+(-\w*r\w*f\w*|-\w*f\w*r\w*)\s+~",
     r":\(\)\s*\{\s*:\s*\|\s*:\s*&?\s*\}\s*;\s*:",
     r"mkfs(\.\w+)?\s",
     r"dd\s+if=",
     r">\s*/dev/sd\w*",
-    // system/privilege
     r"\bshutdown\b",
     r"\breboot\b",
     r"\bpoweroff\b",
     r"chmod\s+-R\s+777\s+/",
     r"chown\s+-R\s+.*\s+/(\s|$)",
-    // network exfil / remote exec
     r"(curl|wget)\s+.*\|\s*(sh|bash)\b",
     r"/dev/tcp/",
-    // git destructive
     r"git\s+push\s+.*--force",
     r"git\s+reset\s+--hard",
     r"git\s+clean\s+-\w*f\w*d\w*",
-    // db destructive
     r"\bDROP\s+TABLE\b",
     r"\bTRUNCATE\s+TABLE\b",
 ];
 
-/// Commands that are allowed to run but require an explicit confirm hook.
-/// If no confirm hook is wired, these are denied outright (fail safe).
 const DESTRUCTIVE_PATTERNS: &[&str] = &[
     r"rm\s+-\w*r\w*",
     r"\bsudo\b",
@@ -63,8 +54,6 @@ fn compile(patterns: &[&str]) -> Vec<Regex> {
         .collect()
 }
 
-/// Called with the raw command string before exec; return `false` to deny.
-/// Lets the CLI wire in an interactive "allow this command?" prompt.
 pub type ConfirmHook = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 pub struct BashTool {
@@ -98,8 +87,6 @@ impl BashTool {
         self
     }
 
-    /// Adds extra deny patterns (regexes, case-insensitive) on top of the
-    /// built-in defaults, which always stay active.
     pub fn with_deny_patterns(mut self, patterns: &[&str]) -> Result<Self, regex::Error> {
         for p in patterns {
             self.deny_patterns.push(Regex::new(&format!("(?i){p}"))?);
@@ -107,10 +94,6 @@ impl BashTool {
         Ok(self)
     }
 
-    /// Restricts execution to commands matching at least one allow pattern.
-    /// When empty (the default), every non-denied command is allowed.
-    /// Deny patterns are still enforced even when a command matches an allow
-    /// pattern.
     pub fn with_allow_patterns(mut self, patterns: &[&str]) -> Result<Self, regex::Error> {
         for p in patterns {
             self.allow_patterns.push(Regex::new(&format!("(?i){p}"))?);
@@ -118,10 +101,6 @@ impl BashTool {
         Ok(self)
     }
 
-    /// Restricts execution to a working directory. The directory must exist;
-    /// it is canonicalized once at construction. This is a best-effort
-    /// sandbox (it chdirs the child process and rejects `..` path
-    /// traversal in the command text) — not an OS-level jail.
     pub fn with_sandbox_dir(mut self, dir: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
         self.sandbox_dir = Some(dir.as_ref().canonicalize()?);
         Ok(self)
