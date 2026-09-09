@@ -100,7 +100,7 @@ fn response_parses_into_chat_response() {
 #[test]
 fn sse_event_parses_content_delta() {
     let event = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n";
-    let parsed = SseStream::parse_event(event).expect("should yield an item").unwrap();
+    let parsed = parse_event(event).expect("should yield an item").unwrap();
     assert_eq!(parsed.delta.as_deref(), Some("hi"));
     assert!(parsed.finish_reason.is_none());
 }
@@ -108,35 +108,21 @@ fn sse_event_parses_content_delta() {
 #[test]
 fn sse_done_marker_yields_no_item() {
     let event = b"data: [DONE]\n\n";
-    assert!(SseStream::parse_event(event).is_none());
+    assert!(parse_event(event).is_none());
 }
 
 #[test]
 fn sse_event_reports_finish_reason() {
     let event = b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
-    let parsed = SseStream::parse_event(event).expect("should yield an item").unwrap();
+    let parsed = parse_event(event).expect("should yield an item").unwrap();
     assert_eq!(parsed.finish_reason, Some(FinishReason::Stop));
 }
 
 #[test]
 fn take_event_splits_on_double_newline_and_buffers_partial() {
-    let mut stream = SseStream {
-        inner: Box::pin(EmptyByteStream),
-        buf: b"data: {\"choices\":[]}\n\ndata: partial".to_vec(),
-        done: false,
-    };
-    let event = stream.take_event().expect("first event available");
+    let mut buf = b"data: {\"choices\":[]}\n\ndata: partial".to_vec();
+    let event = take_event(&mut buf).expect("first event available");
     assert_eq!(event, b"data: {\"choices\":[]}\n\n");
-    assert_eq!(stream.buf, b"data: partial");
-    assert!(stream.take_event().is_none());
-}
-
-struct EmptyByteStream;
-
-impl Stream for EmptyByteStream {
-    type Item = reqwest::Result<Bytes>;
-
-    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Poll::Ready(None)
-    }
+    assert_eq!(buf, b"data: partial");
+    assert!(take_event(&mut buf).is_none());
 }
