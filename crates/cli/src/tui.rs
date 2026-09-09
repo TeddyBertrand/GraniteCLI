@@ -1,7 +1,16 @@
 use std::io;
+use std::time::Duration;
 
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
+use granite_core::agent::Agent;
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Layout};
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::Terminal;
 
 /// Enters raw mode + alt-screen on construction, restores the terminal on
 /// drop (covers normal return, `?` early-return, and panics via the panic
@@ -29,4 +38,130 @@ impl Drop for AltScreenGuard {
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
     }
+}
+
+enum Speaker {
+    User,
+    Agent,
+    Error,
+}
+
+struct HistoryEntry {
+    speaker: Speaker,
+    text: String,
+}
+
+/// Runs the interactive chat loop: a bordered scrollable history panel with
+/// a prompt input line pinned to the bottom. Keeps prompting until the user
+/// quits (`/exit`, `/quit`, Esc, or Ctrl+C) instead of returning after one turn.
+pub async fn run_chat_loop(agent: &mut Agent) -> anyhow::Result<()> {
+    let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+
+    let mut history: Vec<HistoryEntry> = Vec::new();
+    let mut input = String::new();
+    let mut status: Option<String> = None;
+
+    loop {
+        terminal.draw(|frame| draw(frame, &history, &input, status.as_deref()))?;
+
+        if !event::poll(Duration::from_millis(100))? {
+            continue;
+        }
+
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+
+        match key.code {
+            KeyCode::Esc => break,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+            KeyCode::Enter => {
+                let line = input.trim().to_string();
+                input.clear();
+                if line.is_empty() {
+                    continue;
+                }
+                if line == "/exit" || line == "/quit" {
+                    break;
+                }
+
+                history.push(HistoryEntry {
+                    speaker: Speaker::User,
+                    text: line.clone(),
+                });
+                status = Some("thinking...".to_string());
+                terminal.draw(|frame| draw(frame, &history, &input, status.as_deref()))?;
+
+                match agent.run(line).await {
+                    Ok(answer) => history.push(HistoryEntry {
+                        speaker: Speaker::Agent,
+                        text: answer,
+                    }),
+                    Err(err) => history.push(HistoryEntry {
+                        speaker: Speaker::Error,
+                        text: err.to_string(),
+                    }),
+                }
+                status = None;
+            }
+            KeyCode::Backspace => {
+                input.pop();
+            }
+            KeyCode::Char(c) => input.push(c),
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn draw(
+    frame: &mut ratatui::Frame,
+    history: &[HistoryEntry],
+    input: &str,
+    status: Option<&str>,
+) {
+    let [history_area, input_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(frame.area());
+
+    let lines: Vec<Line> = history
+        .iter()
+        .flat_map(|entry| {
+            let (prefix, color) = match entry.speaker {
+                Speaker::User => ("you", Color::Cyan),
+                Speaker::Agent => ("granite", Color::Green),
+                Speaker::Error => ("error", Color::Red),
+            };
+            let mut lines = vec![Line::from(Span::styled(
+                format!("{prefix}:"),
+                Style::default().fg(color),
+            ))];
+            lines.extend(entry.text.lines().map(|l| Line::from(l.to_string())));
+            lines.push(Line::from(""));
+            lines
+        })
+        .collect();
+
+    let history_block = Block::default().borders(Borders::ALL).title("granite");
+    let inner_height = history_block.inner(history_area).height as usize;
+    let scroll = lines.len().saturating_sub(inner_height) as u16;
+
+    let history_widget = Paragraph::new(lines)
+        .block(history_block)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    frame.render_widget(history_widget, history_area);
+
+    let input_title = status.unwrap_or("prompt (Enter to send, /exit to quit)");
+    let input_widget = Paragraph::new(input)
+        .block(Block::default().borders(Borders::ALL).title(input_title));
+    frame.render_widget(input_widget, input_area);
+
+    frame.set_cursor_position((
+        input_area.x + 1 + input.len() as u16,
+        input_area.y + 1,
+    ));
 }

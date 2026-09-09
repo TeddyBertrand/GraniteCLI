@@ -100,34 +100,35 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
     let cfg = Config::load()?;
     let (provider, model) = build_provider(&args, &cfg)?;
 
-    let _alt_screen = tui::AltScreenGuard::enter()?;
-
-    cliclack::intro("granite")?;
-
-    let prompt = match &args.prompt {
-        Some(p) => p.clone(),
-        None => cliclack::input("Prompt").interact()?,
-    };
-
     let mut agent = Agent::new(provider, model)
         .with_tool(Arc::new(ReadFileTool))
         .with_tool(Arc::new(WriteFileTool))
         .with_tool(Arc::new(ListDirTool))
         .with_tool(Arc::new(BashTool::new()));
 
-    let spinner = cliclack::spinner();
-    spinner.start("thinking...");
-    let result = agent.run(prompt).await;
-    spinner.stop("done");
+    match &args.prompt {
+        Some(p) => {
+            let _alt_screen = tui::AltScreenGuard::enter()?;
+            cliclack::intro("granite")?;
+            let spinner = cliclack::spinner();
+            spinner.start("thinking...");
+            let result = agent.run(p.clone()).await;
+            spinner.stop("done");
 
-    match result {
-        Ok(answer) => {
-            cliclack::outro(answer)?;
-            Ok(())
+            match result {
+                Ok(answer) => {
+                    cliclack::outro(answer)?;
+                    Ok(())
+                }
+                Err(err) => {
+                    cliclack::outro(format!("error: {err}"))?;
+                    Err(err.into())
+                }
+            }
         }
-        Err(err) => {
-            cliclack::outro(format!("error: {err}"))?;
-            Err(err.into())
+        None => {
+            let _alt_screen = tui::AltScreenGuard::enter()?;
+            tui::run_chat_loop(&mut agent).await
         }
     }
 }
