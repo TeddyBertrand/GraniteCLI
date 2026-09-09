@@ -1,9 +1,9 @@
 use std::io;
-use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
+use futures_util::StreamExt;
 use granite_core::agent::Agent;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout};
@@ -103,36 +103,66 @@ struct HistoryEntry {
     text: String,
 }
 
+const SCROLL_STEP: u16 = 1;
+const PAGE_SCROLL_STEP: u16 = 10;
+
 /// Runs the interactive chat loop: a bordered scrollable history panel with
 /// a prompt input line pinned to the bottom. Keeps prompting until the user
-/// quits (`/exit`, `/quit`, Esc, or Ctrl+C) instead of returning after one turn.
+/// quits (`/exit`, `/quit`, Esc, or Ctrl+C while idle) instead of returning
+/// after one turn.
 pub async fn run_chat_loop(agent: &mut Agent) -> anyhow::Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let mut events = EventStream::new();
 
     let mut history: Vec<HistoryEntry> = Vec::new();
     let mut input = String::new();
     let mut status: Option<String> = None;
 
+    // Lines scrolled up from the bottom of the history panel; 0 auto-follows
+    // the latest output. Reset to 0 whenever new content is appended.
+    let mut scroll_up: u16 = 0;
+
+    let mut prompt_history: Vec<String> = Vec::new();
+    // Index into `prompt_history` while recalling with Up/Down; `None` means
+    // the prompt input isn't currently showing a recalled entry.
+    let mut recall_index: Option<usize> = None;
+
     loop {
-        terminal.draw(|frame| draw(frame, &history, &input, status.as_deref()))?;
+        terminal.draw(|frame| draw(frame, &history, &input, status.as_deref(), scroll_up))?;
 
-        if !event::poll(Duration::from_millis(100))? {
-            continue;
-        }
-
-        let Event::Key(key) = event::read()? else {
-            continue;
+        let Some(key) = next_key(&mut events).await? else {
+            break;
         };
-        if key.kind != KeyEventKind::Press {
-            continue;
-        }
 
         match key.code {
             KeyCode::Esc => break,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+            KeyCode::PageUp => scroll_up = scroll_up.saturating_add(PAGE_SCROLL_STEP),
+            KeyCode::PageDown => scroll_up = scroll_up.saturating_sub(PAGE_SCROLL_STEP),
+            KeyCode::Up if input.is_empty() && !prompt_history.is_empty() => {
+                let next_index = match recall_index {
+                    Some(i) => i.saturating_sub(1),
+                    None => prompt_history.len() - 1,
+                };
+                recall_index = Some(next_index);
+                input = prompt_history[next_index].clone();
+            }
+            KeyCode::Up => scroll_up = scroll_up.saturating_add(SCROLL_STEP),
+            KeyCode::Down if recall_index.is_some() => {
+                let current = recall_index.unwrap();
+                if current + 1 < prompt_history.len() {
+                    recall_index = Some(current + 1);
+                    input = prompt_history[current + 1].clone();
+                } else {
+                    recall_index = None;
+                    input.clear();
+                }
+            }
+            KeyCode::Down => scroll_up = scroll_up.saturating_sub(SCROLL_STEP),
             KeyCode::Enter => {
                 let line = input.trim().to_string();
                 input.clear();
+                recall_index = None;
                 if line.is_empty() {
                     continue;
                 }
@@ -140,29 +170,41 @@ pub async fn run_chat_loop(agent: &mut Agent) -> anyhow::Result<()> {
                     break;
                 }
 
+                prompt_history.push(line.clone());
                 history.push(HistoryEntry {
                     speaker: Speaker::User,
                     text: line.clone(),
                 });
                 status = Some("thinking...".to_string());
-                terminal.draw(|frame| draw(frame, &history, &input, status.as_deref()))?;
+                scroll_up = 0;
+                terminal.draw(|frame| draw(frame, &history, &input, status.as_deref(), scroll_up))?;
 
-                match agent.run(line).await {
-                    Ok(answer) => history.push(HistoryEntry {
+                let turn = run_turn(agent, line, &mut events).await;
+                match turn {
+                    TurnOutcome::Answer(answer) => history.push(HistoryEntry {
                         speaker: Speaker::Agent,
                         text: answer,
                     }),
-                    Err(err) => history.push(HistoryEntry {
+                    TurnOutcome::Error(err) => history.push(HistoryEntry {
                         speaker: Speaker::Error,
-                        text: err.to_string(),
+                        text: err,
+                    }),
+                    TurnOutcome::Cancelled => history.push(HistoryEntry {
+                        speaker: Speaker::Error,
+                        text: "cancelled".to_string(),
                     }),
                 }
                 status = None;
+                scroll_up = 0;
             }
             KeyCode::Backspace => {
                 input.pop();
+                recall_index = None;
             }
-            KeyCode::Char(c) => input.push(c),
+            KeyCode::Char(c) => {
+                input.push(c);
+                recall_index = None;
+            }
             _ => {}
         }
     }
@@ -170,11 +212,60 @@ pub async fn run_chat_loop(agent: &mut Agent) -> anyhow::Result<()> {
     Ok(())
 }
 
+enum TurnOutcome {
+    Answer(String),
+    Error(String),
+    Cancelled,
+}
+
+/// Runs one agent turn, racing it against incoming terminal events so a
+/// Ctrl+C during the turn cancels it (dropping the in-flight future) instead
+/// of exiting the app.
+async fn run_turn(agent: &mut Agent, line: String, events: &mut EventStream) -> TurnOutcome {
+    tokio::select! {
+        result = agent.run(line) => match result {
+            Ok(answer) => TurnOutcome::Answer(answer),
+            Err(err) => TurnOutcome::Error(err.to_string()),
+        },
+        () = wait_for_cancel(events) => TurnOutcome::Cancelled,
+    }
+}
+
+async fn wait_for_cancel(events: &mut EventStream) {
+    loop {
+        let Some(Ok(Event::Key(key))) = events.next().await else {
+            return;
+        };
+        if key.kind == KeyEventKind::Press
+            && key.code == KeyCode::Char('c')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            return;
+        }
+    }
+}
+
+async fn next_key(events: &mut EventStream) -> anyhow::Result<Option<crossterm::event::KeyEvent>> {
+    loop {
+        let Some(event) = events.next().await else {
+            return Ok(None);
+        };
+        let Event::Key(key) = event? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        return Ok(Some(key));
+    }
+}
+
 fn draw(
     frame: &mut ratatui::Frame,
     history: &[HistoryEntry],
     input: &str,
     status: Option<&str>,
+    scroll_up: u16,
 ) {
     let [history_area, input_area] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(frame.area());
@@ -206,7 +297,8 @@ fn draw(
 
     let history_block = Block::default().borders(Borders::ALL).title("granite");
     let inner_height = history_block.inner(history_area).height as usize;
-    let scroll = lines.len().saturating_sub(inner_height) as u16;
+    let bottom_scroll = lines.len().saturating_sub(inner_height) as u16;
+    let scroll = bottom_scroll.saturating_sub(scroll_up);
 
     let history_widget = Paragraph::new(lines)
         .block(history_block)
