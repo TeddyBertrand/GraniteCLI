@@ -2,9 +2,9 @@
 
 1-3 bullets: what changed and why (product/motivation angle, not implementation).
 
-## Closes
+## Refs
 
-Closes #
+Refs #
 
 ## Changes
 
