@@ -64,6 +64,7 @@ fn assistant_tool_call(id: &str, name: &str, args: serde_json::Value) -> ChatRes
                 id: id.to_string(),
                 name: name.to_string(),
                 arguments: args,
+                provider_metadata: None,
             }],
             tool_call_id: None,
         },
