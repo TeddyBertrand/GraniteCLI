@@ -251,6 +251,7 @@ impl GroqToolCall {
             id: self.id,
             name: self.function.name,
             arguments,
+            provider_metadata: None,
         }
     }
 }
@@ -390,6 +391,7 @@ impl GroqStreamChunk {
             name: tc.function.name.unwrap_or_default(),
             arguments: serde_json::from_str(&tc.function.arguments)
                 .unwrap_or(serde_json::Value::String(tc.function.arguments)),
+            provider_metadata: None,
         });
 
         StreamChunk {

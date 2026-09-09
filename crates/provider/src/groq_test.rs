@@ -53,6 +53,7 @@ fn tool_call_arguments_round_trip_through_json_string() {
         id: "call_1".to_string(),
         name: "bash".to_string(),
         arguments: json!({"cmd": "ls"}),
+        provider_metadata: None,
     };
     let wire = GroqToolCall::from_tool_call(&tc);
     assert_eq!(wire.function.arguments, r#"{"cmd":"ls"}"#);

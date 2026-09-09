@@ -90,7 +90,22 @@ fn build_provider(args: &RunArgs, cfg: &Config) -> anyhow::Result<(Arc<dyn LlmPr
                 .unwrap_or_else(|| provider::groq::DEFAULT_MODEL.to_string());
             Ok((Arc::new(groq), model))
         }
-        Provider::Gemini => bail!("Gemini provider not implemented yet"),
+        Provider::Gemini => {
+            let gemini = if let Some(key) = &args.api_key {
+                provider::gemini::GeminiProvider::new(key.clone())
+            } else if let Ok(gemini) = provider::gemini::GeminiProvider::from_env() {
+                gemini
+            } else if let Some(key) = cfg.api_key_for(provider) {
+                provider::gemini::GeminiProvider::new(key.to_string())
+            } else {
+                bail!("no Gemini API key: pass --api-key, set GEMINI_API_KEY, or run `granite config set gemini.api_key <key>`")
+            };
+            let model = args
+                .model
+                .clone()
+                .unwrap_or_else(|| provider::gemini::DEFAULT_MODEL.to_string());
+            Ok((Arc::new(gemini), model))
+        }
         Provider::Ollama => bail!("Ollama provider not implemented yet"),
     }
 }

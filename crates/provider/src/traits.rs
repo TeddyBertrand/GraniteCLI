@@ -19,6 +19,10 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: serde_json::Value,
+    /// Opaque provider-specific token some providers (e.g. Gemini's `thought_signature`)
+    /// require echoed back verbatim on the next turn to keep multi-turn tool use valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_metadata: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
