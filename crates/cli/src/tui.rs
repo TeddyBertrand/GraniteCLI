@@ -40,6 +40,58 @@ impl Drop for AltScreenGuard {
     }
 }
 
+/// `tui-markdown` renders against `ratatui-core` types, which are structurally
+/// identical to but a distinct crate from the `ratatui` 0.29 types used here.
+/// Round-trip colors/modifiers through their matching string reprs to convert.
+fn convert_style(style: ratatui_core::style::Style) -> Style {
+    let mut out = Style::default();
+    if let Some(fg) = style.fg {
+        out.fg = fg.to_string().parse().ok();
+    }
+    if let Some(bg) = style.bg {
+        out.bg = bg.to_string().parse().ok();
+    }
+    out = out.add_modifier(convert_modifier(style.add_modifier));
+    out
+}
+
+fn convert_modifier(modifier: ratatui_core::style::Modifier) -> ratatui::style::Modifier {
+    use ratatui::style::Modifier;
+    let flags = [
+        (ratatui_core::style::Modifier::BOLD, Modifier::BOLD),
+        (ratatui_core::style::Modifier::DIM, Modifier::DIM),
+        (ratatui_core::style::Modifier::ITALIC, Modifier::ITALIC),
+        (ratatui_core::style::Modifier::UNDERLINED, Modifier::UNDERLINED),
+        (ratatui_core::style::Modifier::SLOW_BLINK, Modifier::SLOW_BLINK),
+        (ratatui_core::style::Modifier::RAPID_BLINK, Modifier::RAPID_BLINK),
+        (ratatui_core::style::Modifier::REVERSED, Modifier::REVERSED),
+        (ratatui_core::style::Modifier::HIDDEN, Modifier::HIDDEN),
+        (ratatui_core::style::Modifier::CROSSED_OUT, Modifier::CROSSED_OUT),
+    ];
+    flags.into_iter().fold(Modifier::empty(), |acc, (src, dst)| {
+        if modifier.contains(src) {
+            acc | dst
+        } else {
+            acc
+        }
+    })
+}
+
+fn markdown_lines(text: &str) -> Vec<Line<'static>> {
+    tui_markdown::from_str(text)
+        .lines
+        .into_iter()
+        .map(|line| {
+            let spans: Vec<Span<'static>> = line
+                .spans
+                .into_iter()
+                .map(|span| Span::styled(span.content.into_owned(), convert_style(span.style)))
+                .collect();
+            Line::from(spans)
+        })
+        .collect()
+}
+
 enum Speaker {
     User,
     Agent,
@@ -139,7 +191,14 @@ fn draw(
                 format!("{prefix}:"),
                 Style::default().fg(color),
             ))];
-            lines.extend(entry.text.lines().map(|l| Line::from(l.to_string())));
+            match entry.speaker {
+                Speaker::Agent => {
+                    lines.extend(markdown_lines(&entry.text));
+                }
+                Speaker::User | Speaker::Error => {
+                    lines.extend(entry.text.lines().map(|l| Line::from(l.to_string())));
+                }
+            }
             lines.push(Line::from(""));
             lines
         })
