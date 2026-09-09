@@ -89,7 +89,7 @@ jobs:
           set -euo pipefail
 
           issue_numbers=$(gh api "repos/$REPO/pulls/$PR_NUMBER" \
-            --jq '.body' | grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+' \
+            --jq '.body' | grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?|refs?) #[0-9]+' \
             | grep -oE '[0-9]+' || true)
 
           if [ -z "$issue_numbers" ]; then
@@ -157,7 +157,7 @@ jobs:
           esac
 
           issue_numbers=$(gh api "repos/$REPO/pulls/$PR_NUMBER" \
-            --jq '.body' | grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+' \
+            --jq '.body' | grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?|refs?) #[0-9]+' \
             | grep -oE '[0-9]+' || true)
 
           if [ -z "$issue_numbers" ]; then
@@ -199,4 +199,9 @@ jobs:
                  -f fieldId="$STATUS_FIELD_ID" -f optionId="$TARGET_OPTION_ID"
 
             echo "issue #$n -> $BASE_REF status"
+
+            if [ "$BASE_REF" = "dev" ]; then
+              gh issue close "$n" --repo "$REPO" --reason completed
+              echo "issue #$n closed (merged to dev)"
+            fi
           done
