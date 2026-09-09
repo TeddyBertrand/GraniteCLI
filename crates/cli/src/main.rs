@@ -1,5 +1,6 @@
 mod args;
 mod config;
+mod tui;
 
 use std::sync::Arc;
 
@@ -98,6 +99,8 @@ fn build_provider(args: &RunArgs, cfg: &Config) -> anyhow::Result<(Arc<dyn LlmPr
 async fn run(args: RunArgs) -> anyhow::Result<()> {
     let cfg = Config::load()?;
     let (provider, model) = build_provider(&args, &cfg)?;
+
+    let _alt_screen = tui::AltScreenGuard::enter()?;
 
     cliclack::intro("granite")?;
 
