@@ -77,8 +77,23 @@ fn convert_modifier(modifier: ratatui_core::style::Modifier) -> ratatui::style::
     })
 }
 
-fn markdown_lines(text: &str) -> Vec<Line<'static>> {
-    tui_markdown::from_str(text)
+/// Default `tui-markdown` style sheet prints the ```` ``` ```` fence lines as literal text.
+/// Hide them by overriding `code_block_fence` to empty, keeping syntax highlighting.
+#[derive(Debug, Clone)]
+struct NoFenceStyleSheet;
+
+impl tui_markdown::StyleSheet for NoFenceStyleSheet {
+    fn code_block_fence(&self) -> &str {
+        ""
+    }
+}
+
+const CODE_BORDER: Color = Color::DarkGray;
+const CODE_BG: Color = Color::Rgb(40, 40, 40);
+
+fn ratatui_core_lines(text: &str) -> Vec<Line<'static>> {
+    let options = tui_markdown::Options::new(NoFenceStyleSheet);
+    tui_markdown::from_str_with_options(text, &options)
         .lines
         .into_iter()
         .map(|line| {
@@ -88,6 +103,134 @@ fn markdown_lines(text: &str) -> Vec<Line<'static>> {
                 .map(|span| Span::styled(span.content.into_owned(), convert_style(span.style)))
                 .collect();
             Line::from(spans)
+        })
+        .collect()
+}
+
+enum MarkdownSegment<'a> {
+    Text(&'a str),
+    Code { lang: &'a str, body: &'a str },
+}
+
+/// Splits on ` ``` ` fence lines ourselves so code blocks can be boxed separately from
+/// prose — tui-markdown renders everything as one flat `Text`, with no way to tell a
+/// consumer where a code block starts/ends after the fact.
+fn split_code_blocks(text: &str) -> Vec<MarkdownSegment<'_>> {
+    let mut segments = Vec::new();
+    let mut rest = text;
+    loop {
+        let Some(fence_start) = rest.find("```") else {
+            if !rest.is_empty() {
+                segments.push(MarkdownSegment::Text(rest));
+            }
+            break;
+        };
+        if fence_start > 0 {
+            segments.push(MarkdownSegment::Text(&rest[..fence_start]));
+        }
+        let after_open = &rest[fence_start + 3..];
+        let lang_end = after_open.find('\n').unwrap_or(after_open.len());
+        let lang = &after_open[..lang_end];
+        let body_start = &after_open[lang_end..].trim_start_matches('\n');
+        let Some(fence_end) = body_start.find("```") else {
+            // Unterminated fence (still streaming) — treat the rest as code.
+            segments.push(MarkdownSegment::Code {
+                lang,
+                body: body_start,
+            });
+            break;
+        };
+        let body = body_start[..fence_end].trim_end_matches('\n');
+        segments.push(MarkdownSegment::Code { lang, body });
+        rest = &body_start[fence_end + 3..];
+    }
+    segments
+}
+
+const PAD: &str = "    ";
+const RIGHT_MARGIN: usize = 3;
+
+/// Fills the rest of a code-block line with background so the box reads as one
+/// panel, not just an outline around the text. Leaves `RIGHT_MARGIN` columns
+/// unbackgrounded on the right, mirroring the left `PAD`.
+fn pad_bg(mut line: Line<'static>, width: usize) -> Line<'static> {
+    let target_width = width.saturating_sub(RIGHT_MARGIN);
+    let filled = line.width();
+    if filled < target_width {
+        line.spans.push(Span::styled(
+            " ".repeat(target_width - filled),
+            Style::default().bg(CODE_BG),
+        ));
+    }
+    line
+}
+
+/// `+`/`-` prefixed lines in a diff/patch block are diff markup, not syntax to
+/// highlight — color them by prefix instead of running them through syntect.
+fn diff_line_style(line: &str) -> Style {
+    let base = Style::default().bg(CODE_BG);
+    if line.starts_with('+') && !line.starts_with("+++") {
+        base.fg(Color::Green)
+    } else if line.starts_with('-') && !line.starts_with("---") {
+        base.fg(Color::Red)
+    } else {
+        base
+    }
+}
+
+fn code_block_lines(lang: &str, body: &str, width: usize) -> Vec<Line<'static>> {
+    let is_diff = matches!(lang, "diff" | "patch");
+    let fenced = format!("```{lang}\n{body}\n```");
+    let border = Style::default().fg(CODE_BORDER).bg(CODE_BG);
+
+    let mut lines = Vec::new();
+    let header = if lang.is_empty() {
+        "┌─ code ─".to_string()
+    } else {
+        format!("┌─ {lang} ─")
+    };
+    lines.push(pad_bg(
+        Line::from(vec![Span::raw(PAD), Span::styled(header, border)]),
+        width,
+    ));
+    if is_diff {
+        for source_line in body.lines() {
+            let spans = vec![
+                Span::raw(PAD),
+                Span::styled("│ ", border),
+                Span::styled(source_line.to_string(), diff_line_style(source_line)),
+            ];
+            lines.push(pad_bg(Line::from(spans), width));
+        }
+    } else {
+        for line in ratatui_core_lines(&fenced) {
+            let mut spans = vec![Span::raw(PAD), Span::styled("│ ", border)];
+            spans.extend(
+                line.spans.into_iter().map(|mut span| {
+                    span.style = span.style.bg(CODE_BG);
+                    span
+                }),
+            );
+            lines.push(pad_bg(Line::from(spans), width));
+        }
+    }
+    lines.push(pad_bg(
+        Line::from(vec![
+            Span::raw(PAD),
+            Span::styled("└─".to_string(), border),
+        ]),
+        width,
+    ));
+    lines.push(Line::from(""));
+    lines
+}
+
+fn markdown_lines(text: &str, width: usize) -> Vec<Line<'static>> {
+    split_code_blocks(text)
+        .into_iter()
+        .flat_map(|segment| match segment {
+            MarkdownSegment::Text(text) => ratatui_core_lines(text),
+            MarkdownSegment::Code { lang, body } => code_block_lines(lang, body, width),
         })
         .collect()
 }
@@ -270,6 +413,9 @@ fn draw(
     let [history_area, input_area] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(frame.area());
 
+    let history_block = Block::default().borders(Borders::ALL).title("granite");
+    let inner_width = history_block.inner(history_area).width as usize;
+
     let lines: Vec<Line> = history
         .iter()
         .flat_map(|entry| {
@@ -284,7 +430,7 @@ fn draw(
             ))];
             match entry.speaker {
                 Speaker::Agent => {
-                    lines.extend(markdown_lines(&entry.text));
+                    lines.extend(markdown_lines(&entry.text, inner_width));
                 }
                 Speaker::User | Speaker::Error => {
                     lines.extend(entry.text.lines().map(|l| Line::from(l.to_string())));
@@ -295,7 +441,6 @@ fn draw(
         })
         .collect();
 
-    let history_block = Block::default().borders(Borders::ALL).title("granite");
     let inner_height = history_block.inner(history_area).height as usize;
     let bottom_scroll = lines.len().saturating_sub(inner_height) as u16;
     let scroll = bottom_scroll.saturating_sub(scroll_up);
