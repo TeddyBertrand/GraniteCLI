@@ -1,11 +1,10 @@
 use std::env;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 use std::time::Duration;
 
+use async_stream::stream;
 use async_trait::async_trait;
-use bytes::Bytes;
-use futures_core::stream::{BoxStream, Stream};
+use futures_core::stream::BoxStream;
+use futures_util::StreamExt;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +14,7 @@ use crate::traits::{
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.groq.com/openai/v1";
-const DEFAULT_MODEL: &str = "llama-3.3-70b-versatile";
+const DEFAULT_MODEL: &str = "openai/gpt-oss-20b";
 
 pub struct GroqProvider {
     client: Client,
@@ -119,92 +118,63 @@ impl LlmProvider for GroqProvider {
             return Err(Self::map_error(resp).await);
         }
 
-        Ok(Box::pin(SseStream::new(resp)))
+        Ok(Box::pin(sse_stream(resp)))
     }
 }
 
 // -- SSE parsing --------------------------------------------------------
 
-struct SseStream {
-    inner: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>>,
-    buf: Vec<u8>,
-    done: bool,
+/// Pull one complete SSE event ("...\n\n") out of the buffer, if present.
+fn take_event(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
+    let needle = b"\n\n";
+    let pos = buf.windows(needle.len()).position(|w| w == needle)?;
+    let event: Vec<u8> = buf.drain(..pos + needle.len()).collect();
+    Some(event)
 }
 
-impl SseStream {
-    fn new(resp: reqwest::Response) -> Self {
-        Self {
-            inner: Box::pin(resp.bytes_stream()),
-            buf: Vec::new(),
-            done: false,
+fn parse_event(event: &[u8]) -> Option<Result<StreamChunk, ProviderError>> {
+    let text = String::from_utf8_lossy(event);
+    for line in text.lines() {
+        let Some(data) = line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:"))
+        else {
+            continue;
+        };
+        let data = data.trim();
+        if data == "[DONE]" {
+            return None;
         }
+        let parsed: Result<GroqStreamChunk, _> = serde_json::from_str(data);
+        return Some(match parsed {
+            Ok(chunk) => Ok(chunk.into_stream_chunk()),
+            Err(e) => Err(ProviderError::Parse(e.to_string())),
+        });
     }
-
-    /// Pull one complete SSE event ("...\n\n") out of the buffer, if present.
-    fn take_event(&mut self) -> Option<Vec<u8>> {
-        let needle = b"\n\n";
-        let pos = self
-            .buf
-            .windows(needle.len())
-            .position(|w| w == needle)?;
-        let event: Vec<u8> = self.buf.drain(..pos + needle.len()).collect();
-        Some(event)
-    }
-
-    fn parse_event(event: &[u8]) -> Option<Result<StreamChunk, ProviderError>> {
-        let text = String::from_utf8_lossy(event);
-        for line in text.lines() {
-            let Some(data) = line.strip_prefix("data: ").or_else(|| line.strip_prefix("data:"))
-            else {
-                continue;
-            };
-            let data = data.trim();
-            if data == "[DONE]" {
-                return None;
-            }
-            let parsed: Result<GroqStreamChunk, _> = serde_json::from_str(data);
-            return Some(match parsed {
-                Ok(chunk) => Ok(chunk.into_stream_chunk()),
-                Err(e) => Err(ProviderError::Parse(e.to_string())),
-            });
-        }
-        None
-    }
+    None
 }
 
-impl Stream for SseStream {
-    type Item = Result<StreamChunk, ProviderError>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
+fn sse_stream(resp: reqwest::Response) -> impl futures_core::Stream<Item = Result<StreamChunk, ProviderError>> {
+    stream! {
+        let mut inner = resp.bytes_stream();
+        let mut buf: Vec<u8> = Vec::new();
 
         loop {
-            if let Some(event) = this.take_event() {
-                if let Some(item) = Self::parse_event(&event) {
-                    return Poll::Ready(Some(item));
+            if let Some(event) = take_event(&mut buf) {
+                if let Some(item) = parse_event(&event) {
+                    yield item;
                 }
                 // blank/[DONE] event, keep looking for the next one
                 continue;
             }
 
-            if this.done {
-                return Poll::Ready(None);
-            }
-
-            match this.inner.as_mut().poll_next(cx) {
-                Poll::Ready(Some(Ok(bytes))) => {
-                    this.buf.extend_from_slice(&bytes);
-                    continue;
+            match inner.next().await {
+                Some(Ok(bytes)) => {
+                    buf.extend_from_slice(&bytes);
                 }
-                Poll::Ready(Some(Err(e))) => {
-                    this.done = true;
-                    return Poll::Ready(Some(Err(ProviderError::Network(e))));
+                Some(Err(e)) => {
+                    yield Err(ProviderError::Network(e));
+                    break;
                 }
-                Poll::Ready(None) => {
-                    this.done = true;
-                    continue;
-                }
-                Poll::Pending => return Poll::Pending,
+                None => break,
             }
         }
     }
