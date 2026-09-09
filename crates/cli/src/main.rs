@@ -1,6 +1,7 @@
 mod args;
 mod config;
 
+use std::io::Write;
 use std::sync::Arc;
 
 use anyhow::bail;
@@ -127,14 +128,17 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         .with_tool(Arc::new(ListDirTool))
         .with_tool(Arc::new(BashTool::new()));
 
-    let spinner = cliclack::spinner();
-    spinner.start("thinking...");
-    let result = agent.run(prompt).await;
-    spinner.stop("done");
+    let result = agent
+        .run_streaming(prompt, |token| {
+            print!("{token}");
+            let _ = std::io::stdout().flush();
+        })
+        .await;
+    println!();
 
     match result {
-        Ok(answer) => {
-            cliclack::outro(answer)?;
+        Ok(_answer) => {
+            cliclack::outro("done")?;
             Ok(())
         }
         Err(err) => {
