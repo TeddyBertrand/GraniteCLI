@@ -44,6 +44,11 @@ impl GroqProvider {
         self
     }
 
+    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = base_url.into();
+        self
+    }
+
     fn endpoint(&self) -> String {
         format!("{}/chat/completions", self.base_url)
     }

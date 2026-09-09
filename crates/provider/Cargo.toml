@@ -15,3 +15,7 @@ futures-core.workspace = true
 futures-util.workspace = true
 thiserror.workspace = true
 bytes.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+wiremock.workspace = true
