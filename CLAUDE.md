@@ -39,6 +39,10 @@ Exception: `cli` uses `granite_core = { package = "granite-core", ... }` instead
 
 - No "Generated with Claude Code" / co-author / attribution footer in PR title or body. PR content only.
 
+## CI
+
+`.github/workflows/ci.yml` gates PRs into `dev`/`main`: `cargo build`, `cargo test`, `cargo clippy -- -D warnings`, all run inside the Nix devshell (`nix develop -c ...`) via `cachix/install-nix-action`. Clippy warnings fail the check — fix warnings, don't allow them.
+
 ## Docs
 
 - `docs/PROJECT.md` — goals, stack rationale, architecture, status/next-steps. Keep it in sync with real decisions (not brainstorm.md, which is the original French draft, kept as-is for history).
