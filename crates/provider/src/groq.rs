@@ -15,7 +15,7 @@ use crate::traits::{
 };
 
 const DEFAULT_BASE_URL: &str = "https://api.groq.com/openai/v1";
-const DEFAULT_MODEL: &str = "llama-3.3-70b-versatile";
+const DEFAULT_MODEL: &str = "openai/gpt-oss-20b";
 
 pub struct GroqProvider {
     client: Client,
