@@ -14,6 +14,7 @@ use super::*;
 
 struct ScriptedProvider {
     responses: Mutex<Vec<Result<ChatResponse, ProviderError>>>,
+    stream_chunks: Mutex<Vec<Vec<Result<StreamChunk, ProviderError>>>>,
     calls: AtomicUsize,
 }
 
@@ -21,6 +22,15 @@ impl ScriptedProvider {
     fn new(responses: Vec<Result<ChatResponse, ProviderError>>) -> Self {
         Self {
             responses: Mutex::new(responses),
+            stream_chunks: Mutex::new(Vec::new()),
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn new_streaming(stream_chunks: Vec<Vec<Result<StreamChunk, ProviderError>>>) -> Self {
+        Self {
+            responses: Mutex::new(Vec::new()),
+            stream_chunks: Mutex::new(stream_chunks),
             calls: AtomicUsize::new(0),
         }
     }
@@ -39,7 +49,11 @@ impl LlmProvider for ScriptedProvider {
         &self,
         _req: ChatRequest,
     ) -> Result<BoxStream<'static, Result<StreamChunk, ProviderError>>, ProviderError> {
-        unimplemented!("not used by agent tests")
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut scripted = self.stream_chunks.lock().unwrap();
+        assert!(!scripted.is_empty(), "provider called more times than scripted");
+        let chunks = scripted.remove(0);
+        Ok(Box::pin(futures_util::stream::iter(chunks)))
     }
 }
 
@@ -164,6 +178,41 @@ async fn auth_error_aborts_immediately() {
     let err = agent.run("go".to_string()).await.unwrap_err();
 
     assert!(matches!(err, AgentError::Provider(ProviderError::Auth)));
+}
+
+fn text_chunk(delta: &str) -> Result<StreamChunk, ProviderError> {
+    Ok(StreamChunk {
+        delta: Some(delta.to_string()),
+        tool_call_delta: None,
+        finish_reason: None,
+    })
+}
+
+fn final_chunk() -> Result<StreamChunk, ProviderError> {
+    Ok(StreamChunk {
+        delta: None,
+        tool_call_delta: None,
+        finish_reason: Some(FinishReason::Stop),
+    })
+}
+
+#[tokio::test]
+async fn run_streaming_emits_tokens_and_returns_full_answer() {
+    let provider = Arc::new(ScriptedProvider::new_streaming(vec![vec![
+        text_chunk("hi"),
+        text_chunk(" there"),
+        final_chunk(),
+    ]]));
+    let mut agent = Agent::new(provider, "test-model");
+
+    let mut tokens = Vec::new();
+    let answer = agent
+        .run_streaming("hello".to_string(), |t| tokens.push(t.to_string()))
+        .await
+        .unwrap();
+
+    assert_eq!(answer, "hi there");
+    assert_eq!(tokens, vec!["hi".to_string(), " there".to_string()]);
 }
 
 #[tokio::test]
