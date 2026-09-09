@@ -30,6 +30,7 @@ anyhow = "1"
 tempfile = "3"
 regex = "1"
 toml = "0.8"
+wiremock = "0.6"
 
 core = { package = "granite-core", path = "crates/core" }
 provider = { package = "granite-provider", path = "crates/provider" }
