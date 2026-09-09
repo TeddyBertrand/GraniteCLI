@@ -6,14 +6,6 @@ Guidance for Claude Code working in this repo. See `docs/PROJECT.md` for full pr
 
 GraniteCLI — Rust CLI agent (ReAct loop) driving free/open LLM providers (Groq, Gemini, Ollama). Cargo workspace, 4 crates.
 
-## Environment
-
-NixOS. `cargo`/`rustc` not on default PATH — use the flake:
-```
-nix develop
-```
-then `cargo build` / `cargo run -p granite-cli` inside that shell.
-
 ## Workspace layout
 
 - `crates/cli` (pkg `granite-cli`, bin `granite`) — clap + cliclack, entry point / UI only.
