@@ -1,10 +1,20 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use clap::ValueEnum;
+
+use crate::args::Provider;
+
 /// Result of dispatching a command, signalling what `run_chat_loop` should
 /// do next.
 pub enum CommandOutcome {
     Exit,
+    /// Switch to a different provider (model resets to that provider's default).
+    SwitchProvider(Provider),
+    /// Switch model, keeping the current provider.
+    SwitchModel(String),
+    /// Informational or error message to show in the history panel.
+    Info(String),
 }
 
 pub trait SlashCommand: Send + Sync {
@@ -14,7 +24,8 @@ pub trait SlashCommand: Send + Sync {
     fn aliases(&self) -> &[&str] {
         &[]
     }
-    fn execute(&self) -> CommandOutcome;
+    /// `args` is the rest of the line after the command name, trimmed.
+    fn execute(&self, args: &str) -> CommandOutcome;
 }
 
 pub struct CommandRegistry {
@@ -50,9 +61,9 @@ impl CommandRegistry {
     /// `line` isn't a recognized slash command (caller decides how to
     /// report "unknown command" vs. falling through to the agent).
     pub fn dispatch(&self, line: &str) -> Option<CommandOutcome> {
-        let (name, _args) = Self::parse(line)?;
+        let (name, args) = Self::parse(line)?;
         let command = self.commands.get(name)?;
-        Some(command.execute())
+        Some(command.execute(args))
     }
 }
 
@@ -74,14 +85,56 @@ impl SlashCommand for ExitCommand {
         &["quit"]
     }
 
-    fn execute(&self) -> CommandOutcome {
+    fn execute(&self, _args: &str) -> CommandOutcome {
         CommandOutcome::Exit
+    }
+}
+
+/// `/provider <groq|gemini|ollama>` switches provider (and resets model to
+/// that provider's default).
+pub struct ProviderCommand;
+
+impl SlashCommand for ProviderCommand {
+    fn name(&self) -> &str {
+        "provider"
+    }
+
+    fn execute(&self, args: &str) -> CommandOutcome {
+        let name = args.trim();
+        if name.is_empty() {
+            return CommandOutcome::Info("usage: /provider <groq|gemini|ollama>".to_string());
+        }
+        match Provider::from_str(name, true) {
+            Ok(provider) => CommandOutcome::SwitchProvider(provider),
+            Err(_) => CommandOutcome::Info(format!(
+                "unknown provider '{name}' — expected one of: groq, gemini, ollama"
+            )),
+        }
+    }
+}
+
+/// `/model <name>` switches model, keeping the current provider.
+pub struct ModelCommand;
+
+impl SlashCommand for ModelCommand {
+    fn name(&self) -> &str {
+        "model"
+    }
+
+    fn execute(&self, args: &str) -> CommandOutcome {
+        let name = args.trim();
+        if name.is_empty() {
+            return CommandOutcome::Info("usage: /model <name>".to_string());
+        }
+        CommandOutcome::SwitchModel(name.to_string())
     }
 }
 
 pub fn default_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
     registry.register(Arc::new(ExitCommand));
+    registry.register(Arc::new(ProviderCommand));
+    registry.register(Arc::new(ModelCommand));
     registry
 }
 

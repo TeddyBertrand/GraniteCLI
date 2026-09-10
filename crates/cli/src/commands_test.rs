@@ -32,3 +32,44 @@ fn dispatch_non_command_line_returns_none() {
     let registry = default_registry();
     assert!(registry.dispatch("hello").is_none());
 }
+
+#[test]
+fn dispatch_provider_switches_to_named_provider() {
+    let registry = default_registry();
+    let outcome = registry.dispatch("/provider gemini");
+    assert!(matches!(
+        outcome,
+        Some(CommandOutcome::SwitchProvider(Provider::Gemini))
+    ));
+}
+
+#[test]
+fn dispatch_provider_missing_arg_is_info() {
+    let registry = default_registry();
+    let outcome = registry.dispatch("/provider");
+    assert!(matches!(outcome, Some(CommandOutcome::Info(_))));
+}
+
+#[test]
+fn dispatch_provider_unknown_name_is_info() {
+    let registry = default_registry();
+    let outcome = registry.dispatch("/provider bogus");
+    assert!(matches!(outcome, Some(CommandOutcome::Info(_))));
+}
+
+#[test]
+fn dispatch_model_switches_to_named_model() {
+    let registry = default_registry();
+    let outcome = registry.dispatch("/model llama-3.1-70b");
+    assert!(matches!(
+        outcome,
+        Some(CommandOutcome::SwitchModel(m)) if m == "llama-3.1-70b"
+    ));
+}
+
+#[test]
+fn dispatch_model_missing_arg_is_info() {
+    let registry = default_registry();
+    let outcome = registry.dispatch("/model");
+    assert!(matches!(outcome, Some(CommandOutcome::Info(_))));
+}
