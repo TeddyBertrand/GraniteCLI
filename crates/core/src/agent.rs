@@ -71,6 +71,14 @@ impl Agent {
         self
     }
 
+    pub fn set_model(&mut self, model: impl Into<String>) {
+        self.model = model.into();
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
     pub fn with_max_iterations(mut self, max_iterations: usize) -> Self {
         self.max_iterations = max_iterations;
         self

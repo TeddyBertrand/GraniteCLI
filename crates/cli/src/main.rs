@@ -72,22 +72,20 @@ fn set_config(key: &str, value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-const NO_GROQ_KEY_MSG: &str =
-    "no Groq API key: pass --api-key, set GROQ_API_KEY, or run `granite config set groq.api_key <key>`";
-
-/// Resolves the provider + model to run with. `Ok(None)` means the (Groq)
-/// provider is selected but no key could be resolved from flag/env/config —
-/// interactive mode can recover from this via the TUI's API key setup;
-/// non-interactive (`--prompt`) mode must still fail fast on it.
-fn build_provider(
-    args: &RunArgs,
+/// Builds a provider + model pair. `Ok(None)` means the (Groq) provider is
+/// selected but no key could be resolved from arg/env/config — interactive
+/// mode can recover from this via the TUI's API key setup; non-interactive
+/// (`--prompt`) mode must still fail fast on it. `api_key` precedence:
+/// explicit arg > provider-specific env var > config file.
+pub(crate) fn build_provider(
+    provider: Provider,
+    model: Option<String>,
+    api_key: Option<String>,
     cfg: &Config,
 ) -> anyhow::Result<Option<(Arc<dyn LlmProvider>, String)>> {
-    let provider = args.provider.unwrap_or(Provider::Groq);
-
     match provider {
         Provider::Groq => {
-            let groq = if let Some(key) = &args.api_key {
+            let groq = if let Some(key) = &api_key {
                 Some(provider::groq::GroqProvider::new(key.clone()))
             } else if let Ok(groq) = provider::groq::GroqProvider::from_env() {
                 Some(groq)
@@ -95,10 +93,7 @@ fn build_provider(
                 cfg.api_key_for(provider)
                     .map(|key| provider::groq::GroqProvider::new(key.to_string()))
             };
-            let model = args
-                .model
-                .clone()
-                .unwrap_or_else(|| provider::groq::DEFAULT_MODEL.to_string());
+            let model = model.unwrap_or_else(|| provider::groq::DEFAULT_MODEL.to_string());
             Ok(groq.map(|g| (Arc::new(g) as Arc<dyn LlmProvider>, model)))
         }
         Provider::Gemini => bail!("Gemini provider not implemented yet"),
@@ -108,13 +103,17 @@ fn build_provider(
 
 async fn run(args: RunArgs) -> anyhow::Result<()> {
     let cfg = Config::load()?;
-    let provider_choice = args.provider.unwrap_or(Provider::Groq);
-    let resolved = build_provider(&args, &cfg)?;
+    let mut provider_kind = args.provider.unwrap_or(Provider::Groq);
+    let resolved = build_provider(provider_kind, args.model.clone(), args.api_key.clone(), &cfg)?;
 
     match &args.prompt {
         Some(p) => {
             let Some((provider, model)) = resolved else {
-                bail!(NO_GROQ_KEY_MSG);
+                bail!(
+                    "no {} API key: pass --api-key, set the provider's env var, or run `granite config set {}.api_key <key>`",
+                    provider_kind.label(),
+                    provider_kind.config_prefix()
+                );
             };
             let mut agent = build_agent(Agent::new(provider, model));
 
@@ -147,7 +146,7 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
             };
 
             let _alt_screen = tui::AltScreenGuard::enter()?;
-            tui::run_chat_loop(&mut agent, provider_choice).await
+            tui::run_chat_loop(&mut agent, &cfg, &mut provider_kind).await
         }
     }
 }
