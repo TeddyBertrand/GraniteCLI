@@ -1,4 +1,5 @@
 use std::io;
+use std::sync::Arc;
 
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
@@ -12,7 +13,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Terminal;
 
+use crate::args::Provider;
 use crate::commands::{default_registry, CommandOutcome};
+use crate::config::Config;
 
 /// Enters raw mode + alt-screen on construction, restores the terminal on
 /// drop (covers normal return, `?` early-return, and panics via the panic
@@ -108,11 +111,29 @@ pub(crate) struct HistoryEntry {
 const SCROLL_STEP: u16 = 1;
 const PAGE_SCROLL_STEP: u16 = 10;
 
+/// Which full-screen view the loop is currently rendering.
+enum AppMode {
+    Chat,
+    /// Dedicated full-screen API key entry, replacing the chat view
+    /// entirely. `mandatory` is true when this is the unavoidable
+    /// first-run screen shown because no key resolved at startup — Esc
+    /// there quits instead of falling back to a keyless chat.
+    ApiKeySetup {
+        input: String,
+        mandatory: bool,
+        error: Option<String>,
+    },
+}
+
 /// Runs the interactive chat loop: a bordered scrollable history panel with
 /// a prompt input line pinned to the bottom. Keeps prompting until the user
 /// quits (`/exit`, `/quit`, Esc, or Ctrl+C while idle) instead of returning
 /// after one turn.
-pub async fn run_chat_loop(agent: &mut Agent) -> anyhow::Result<()> {
+///
+/// If `agent` has no provider set (no API key resolved at startup), the
+/// loop opens straight into the full-screen API key setup view instead of
+/// the chat view — see issue #67.
+pub async fn run_chat_loop(agent: &mut Agent, provider: Provider) -> anyhow::Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut events = EventStream::new();
 
@@ -131,12 +152,65 @@ pub async fn run_chat_loop(agent: &mut Agent) -> anyhow::Result<()> {
 
     let registry = default_registry();
 
+    let mut mode = if agent.has_provider() {
+        AppMode::Chat
+    } else {
+        AppMode::ApiKeySetup {
+            input: String::new(),
+            mandatory: true,
+            error: None,
+        }
+    };
+
     loop {
-        terminal.draw(|frame| draw(frame, &history, &input, status.as_deref(), scroll_up))?;
+        match &mode {
+            AppMode::Chat => {
+                terminal.draw(|frame| draw(frame, &history, &input, status.as_deref(), scroll_up))?;
+            }
+            AppMode::ApiKeySetup { input: key_input, error, mandatory } => {
+                terminal.draw(|frame| {
+                    draw_api_key_setup(frame, provider, key_input, error.as_deref(), *mandatory)
+                })?;
+            }
+        }
 
         let Some(key) = next_key(&mut events).await? else {
             break;
         };
+
+        if let AppMode::ApiKeySetup { input: key_input, mandatory, error } = &mut mode {
+            match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                KeyCode::Esc if *mandatory => break,
+                KeyCode::Esc => mode = AppMode::Chat,
+                KeyCode::Backspace => {
+                    key_input.pop();
+                }
+                KeyCode::Char(c) => key_input.push(c),
+                KeyCode::Enter => {
+                    let raw = key_input.trim().to_string();
+                    if raw.is_empty() {
+                        continue;
+                    }
+                    match apply_api_key(provider, raw) {
+                        Ok(new_provider) => {
+                            agent.set_provider(new_provider);
+                            history.push(HistoryEntry {
+                                speaker: Speaker::Agent,
+                                text: format!("{} API key saved.", provider.label()),
+                            });
+                            mode = AppMode::Chat;
+                        }
+                        Err(err) => {
+                            *error = Some(err.to_string());
+                            key_input.clear();
+                        }
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
 
         match key.code {
             KeyCode::Esc => break,
@@ -173,6 +247,14 @@ pub async fn run_chat_loop(agent: &mut Agent) -> anyhow::Result<()> {
                 if line.starts_with('/') {
                     match registry.dispatch(&line) {
                         Some(CommandOutcome::Exit) => break,
+                        Some(CommandOutcome::PromptApiKey) => {
+                            mode = AppMode::ApiKeySetup {
+                                input: String::new(),
+                                mandatory: false,
+                                error: None,
+                            };
+                            continue;
+                        }
                         None => {
                             history.push(HistoryEntry {
                                 speaker: Speaker::Error,
@@ -182,6 +264,18 @@ pub async fn run_chat_loop(agent: &mut Agent) -> anyhow::Result<()> {
                             continue;
                         }
                     }
+                }
+
+                if !agent.has_provider() {
+                    history.push(HistoryEntry {
+                        speaker: Speaker::Error,
+                        text: format!(
+                            "no {} API key configured — run /apikey to set one",
+                            provider.label()
+                        ),
+                    });
+                    scroll_up = 0;
+                    continue;
                 }
 
                 prompt_history.push(line.clone());
@@ -224,6 +318,15 @@ pub async fn run_chat_loop(agent: &mut Agent) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Persists `key` to config as the given provider's API key and builds a
+/// live provider instance for it.
+fn apply_api_key(provider: Provider, key: String) -> anyhow::Result<Arc<dyn provider::LlmProvider>> {
+    let mut cfg = Config::load()?;
+    cfg.set(&format!("{}.api_key", provider.config_prefix()), &key)?;
+    cfg.save()?;
+    crate::provider_from_key(provider, key)
 }
 
 enum TurnOutcome {
@@ -272,6 +375,59 @@ async fn next_key(events: &mut EventStream) -> anyhow::Result<Option<crossterm::
         }
         return Ok(Some(key));
     }
+}
+
+/// Full-screen (not inline) API key entry — replaces the chat view
+/// entirely while active. Input is masked with `*` since it's a secret.
+fn draw_api_key_setup(
+    frame: &mut ratatui::Frame,
+    provider: Provider,
+    input: &str,
+    error: Option<&str>,
+    mandatory: bool,
+) {
+    let [banner_area, input_area, help_area, error_area] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .areas(frame.area());
+
+    let banner = Paragraph::new(format!("Set your {} API key", provider.label())).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("granite — API key setup"),
+    );
+    frame.render_widget(banner, banner_area);
+
+    let masked: String = "*".repeat(input.chars().count());
+    let input_widget = Paragraph::new(masked).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("paste key, Enter to save"),
+    );
+    frame.render_widget(input_widget, input_area);
+
+    let help_text = if mandatory {
+        "Esc to quit · Ctrl+C to quit"
+    } else {
+        "Esc to cancel and return to chat · Ctrl+C to quit"
+    };
+    let help = Paragraph::new(Line::from(Span::styled(
+        help_text,
+        Style::default().fg(Color::DarkGray),
+    )));
+    frame.render_widget(help, help_area);
+
+    if let Some(err) = error {
+        let error_widget = Paragraph::new(err.to_string())
+            .style(Style::default().fg(Color::Red))
+            .wrap(Wrap { trim: false });
+        frame.render_widget(error_widget, error_area);
+    }
+
+    frame.set_cursor_position((input_area.x + 1 + input.chars().count() as u16, input_area.y + 1));
 }
 
 fn draw(

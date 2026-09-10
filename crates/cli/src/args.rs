@@ -55,3 +55,24 @@ pub enum Provider {
     Gemini,
     Ollama,
 }
+
+impl Provider {
+    /// Display label, e.g. for TUI prompts.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Provider::Groq => "Groq",
+            Provider::Gemini => "Gemini",
+            Provider::Ollama => "Ollama",
+        }
+    }
+
+    /// Config key prefix under which this provider's settings live, e.g.
+    /// "groq" for `groq.api_key`.
+    pub fn config_prefix(&self) -> &'static str {
+        match self {
+            Provider::Groq => "groq",
+            Provider::Gemini => "gemini",
+            Provider::Ollama => "ollama",
+        }
+    }
+}
