@@ -72,12 +72,17 @@ fn set_config(key: &str, value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_provider(args: &RunArgs, cfg: &Config) -> anyhow::Result<(Arc<dyn LlmProvider>, String)> {
-    let provider = args.provider.unwrap_or(Provider::Groq);
-
+/// Builds a provider + model pair, independent of any `RunArgs`. `api_key`
+/// precedence: explicit arg > provider-specific env var > config file.
+pub(crate) fn build_provider(
+    provider: Provider,
+    model: Option<String>,
+    api_key: Option<String>,
+    cfg: &Config,
+) -> anyhow::Result<(Arc<dyn LlmProvider>, String)> {
     match provider {
         Provider::Groq => {
-            let groq = if let Some(key) = &args.api_key {
+            let groq = if let Some(key) = &api_key {
                 provider::groq::GroqProvider::new(key.clone())
             } else if let Ok(groq) = provider::groq::GroqProvider::from_env() {
                 groq
@@ -86,10 +91,7 @@ fn build_provider(args: &RunArgs, cfg: &Config) -> anyhow::Result<(Arc<dyn LlmPr
             } else {
                 bail!("no Groq API key: pass --api-key, set GROQ_API_KEY, or run `granite config set groq.api_key <key>`")
             };
-            let model = args
-                .model
-                .clone()
-                .unwrap_or_else(|| provider::groq::DEFAULT_MODEL.to_string());
+            let model = model.unwrap_or_else(|| provider::groq::DEFAULT_MODEL.to_string());
             Ok((Arc::new(groq), model))
         }
         Provider::Gemini => bail!("Gemini provider not implemented yet"),
@@ -99,7 +101,9 @@ fn build_provider(args: &RunArgs, cfg: &Config) -> anyhow::Result<(Arc<dyn LlmPr
 
 async fn run(args: RunArgs) -> anyhow::Result<()> {
     let cfg = Config::load()?;
-    let (provider, model) = build_provider(&args, &cfg)?;
+    let mut provider_kind = args.provider.unwrap_or(Provider::Groq);
+    let (provider, model) =
+        build_provider(provider_kind, args.model.clone(), args.api_key.clone(), &cfg)?;
 
     let mut agent = Agent::new(provider, model)
         .with_tool(Arc::new(ReadFileTool))
@@ -129,7 +133,7 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
         }
         None => {
             let _alt_screen = tui::AltScreenGuard::enter()?;
-            tui::run_chat_loop(&mut agent).await
+            tui::run_chat_loop(&mut agent, &cfg, &mut provider_kind).await
         }
     }
 }

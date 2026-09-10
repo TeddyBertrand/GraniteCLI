@@ -55,3 +55,13 @@ pub enum Provider {
     Gemini,
     Ollama,
 }
+
+impl std::fmt::Display for Provider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Provider::Groq => write!(f, "groq"),
+            Provider::Gemini => write!(f, "gemini"),
+            Provider::Ollama => write!(f, "ollama"),
+        }
+    }
+}

@@ -12,7 +12,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Terminal;
 
+use crate::args::Provider;
 use crate::commands::{default_registry, CommandOutcome};
+use crate::config::Config;
 
 #[cfg(test)]
 #[path = "tui_test.rs"]
@@ -248,6 +250,7 @@ pub(crate) enum Speaker {
     User,
     Agent,
     Error,
+    Info,
 }
 
 pub(crate) struct HistoryEntry {
@@ -262,7 +265,11 @@ const PAGE_SCROLL_STEP: u16 = 10;
 /// a prompt input line pinned to the bottom. Keeps prompting until the user
 /// quits (`/exit`, `/quit`, Esc, or Ctrl+C while idle) instead of returning
 /// after one turn.
-pub async fn run_chat_loop(agent: &mut Agent) -> anyhow::Result<()> {
+pub async fn run_chat_loop(
+    agent: &mut Agent,
+    cfg: &Config,
+    current_provider: &mut Provider,
+) -> anyhow::Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut events = EventStream::new();
 
@@ -323,6 +330,44 @@ pub async fn run_chat_loop(agent: &mut Agent) -> anyhow::Result<()> {
                 if line.starts_with('/') {
                     match registry.dispatch(&line) {
                         Some(CommandOutcome::Exit) => break,
+                        Some(CommandOutcome::Info(msg)) => {
+                            history.push(HistoryEntry {
+                                speaker: Speaker::Error,
+                                text: msg,
+                            });
+                            scroll_up = 0;
+                            continue;
+                        }
+                        Some(CommandOutcome::SwitchProvider(provider)) => {
+                            match crate::build_provider(provider, None, None, cfg) {
+                                Ok((new_provider, new_model)) => {
+                                    agent.set_provider(new_provider);
+                                    agent.set_model(new_model.clone());
+                                    *current_provider = provider;
+                                    history.push(HistoryEntry {
+                                        speaker: Speaker::Info,
+                                        text: format!(
+                                            "switched to provider {provider} (model {new_model})"
+                                        ),
+                                    });
+                                }
+                                Err(err) => history.push(HistoryEntry {
+                                    speaker: Speaker::Error,
+                                    text: err.to_string(),
+                                }),
+                            }
+                            scroll_up = 0;
+                            continue;
+                        }
+                        Some(CommandOutcome::SwitchModel(model)) => {
+                            agent.set_model(model.clone());
+                            history.push(HistoryEntry {
+                                speaker: Speaker::Info,
+                                text: format!("switched to model {model}"),
+                            });
+                            scroll_up = 0;
+                            continue;
+                        }
                         None => {
                             history.push(HistoryEntry {
                                 speaker: Speaker::Error,
@@ -444,6 +489,7 @@ fn draw(
                 Speaker::User => ("you", Color::Cyan),
                 Speaker::Agent => ("granite", Color::Green),
                 Speaker::Error => ("error", Color::Red),
+                Speaker::Info => ("info", Color::Yellow),
             };
             let mut lines = vec![Line::from(Span::styled(
                 format!("{prefix}:"),
@@ -453,7 +499,7 @@ fn draw(
                 Speaker::Agent => {
                     lines.extend(markdown_lines(&entry.text, inner_width));
                 }
-                Speaker::User | Speaker::Error => {
+                Speaker::User | Speaker::Error | Speaker::Info => {
                     lines.extend(entry.text.lines().map(|l| Line::from(l.to_string())));
                 }
             }
