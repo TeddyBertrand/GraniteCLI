@@ -1,23 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::tui::HistoryEntry;
-
-/// What a command handler is allowed to do to the running chat loop.
-/// `ExitCommand` doesn't need these yet; future commands (`/provider`,
-/// `/model`) will read `args` and push to `history`.
-#[allow(dead_code)]
-pub struct CommandContext<'a> {
-    pub history: &'a mut Vec<HistoryEntry>,
-    pub args: &'a str,
-}
-
-/// Result of dispatching a command: either it was handled in place, or it
-/// signals that `run_chat_loop` should break out of its loop. `Handled` has
-/// no producer yet — `ExitCommand` is the only command so far.
-#[allow(dead_code)]
+/// Result of dispatching a command, signalling what `run_chat_loop` should
+/// do next.
 pub enum CommandOutcome {
-    Handled,
     Exit,
 }
 
@@ -28,7 +14,7 @@ pub trait SlashCommand: Send + Sync {
     fn aliases(&self) -> &[&str] {
         &[]
     }
-    fn execute(&self, ctx: CommandContext<'_>) -> CommandOutcome;
+    fn execute(&self) -> CommandOutcome;
 }
 
 pub struct CommandRegistry {
@@ -63,10 +49,10 @@ impl CommandRegistry {
     /// Looks up and runs the command named by `line`. Returns `None` if
     /// `line` isn't a recognized slash command (caller decides how to
     /// report "unknown command" vs. falling through to the agent).
-    pub fn dispatch(&self, line: &str, history: &mut Vec<HistoryEntry>) -> Option<CommandOutcome> {
-        let (name, args) = Self::parse(line)?;
+    pub fn dispatch(&self, line: &str) -> Option<CommandOutcome> {
+        let (name, _args) = Self::parse(line)?;
         let command = self.commands.get(name)?;
-        Some(command.execute(CommandContext { history, args }))
+        Some(command.execute())
     }
 }
 
@@ -88,7 +74,7 @@ impl SlashCommand for ExitCommand {
         &["quit"]
     }
 
-    fn execute(&self, _ctx: CommandContext<'_>) -> CommandOutcome {
+    fn execute(&self) -> CommandOutcome {
         CommandOutcome::Exit
     }
 }

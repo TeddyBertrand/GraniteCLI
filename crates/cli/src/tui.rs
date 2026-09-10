@@ -171,12 +171,8 @@ pub async fn run_chat_loop(agent: &mut Agent) -> anyhow::Result<()> {
                     continue;
                 }
                 if line.starts_with('/') {
-                    match registry.dispatch(&line, &mut history) {
+                    match registry.dispatch(&line) {
                         Some(CommandOutcome::Exit) => break,
-                        Some(CommandOutcome::Handled) => {
-                            scroll_up = 0;
-                            continue;
-                        }
                         None => {
                             history.push(HistoryEntry {
                                 speaker: Speaker::Error,
