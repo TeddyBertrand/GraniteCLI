@@ -5,11 +5,11 @@ use ratatui::Terminal;
 use super::*;
 
 /// `tui-markdown` sets a heading's style on the Line itself, not per-span.
-/// Regression check for markdown_lines() dropping that Line-level style
-/// during the ratatui-core -> ratatui conversion.
+/// Regression check for `ratatui_core_lines()` dropping that Line-level
+/// style during the ratatui-core -> ratatui conversion.
 #[test]
-fn markdown_lines_carries_heading_style() {
-    let lines = markdown_lines("# Heading\n");
+fn ratatui_core_lines_carries_heading_style() {
+    let lines = ratatui_core_lines("# Heading\n");
     let heading_line = &lines[0];
     assert_eq!(
         heading_line.style.add_modifier,
@@ -18,6 +18,22 @@ fn markdown_lines_carries_heading_style() {
         heading_line.style
     );
     assert_eq!(heading_line.style.bg, Some(Color::Cyan));
+}
+
+/// Fence markers are hidden (via NoFenceStyleSheet + code_block_lines'
+/// boxed rendering) — the raw "```lang" line should never appear.
+#[test]
+fn code_block_fence_markers_are_hidden() {
+    let lines = markdown_lines("```rust\nfn main() {}\n```\n", 80);
+    let rendered: String = lines
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !rendered.contains("```"),
+        "fence markers leaked into render:\n{rendered}"
+    );
 }
 
 /// Renders a heading + table agent reply into the history panel and checks
