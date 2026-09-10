@@ -12,6 +12,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Terminal;
 
+use crate::commands::{default_registry, CommandOutcome};
+
 /// Enters raw mode + alt-screen on construction, restores the terminal on
 /// drop (covers normal return, `?` early-return, and panics via the panic
 /// hook installed in `enter`).
@@ -92,15 +94,15 @@ fn markdown_lines(text: &str) -> Vec<Line<'static>> {
         .collect()
 }
 
-enum Speaker {
+pub(crate) enum Speaker {
     User,
     Agent,
     Error,
 }
 
-struct HistoryEntry {
-    speaker: Speaker,
-    text: String,
+pub(crate) struct HistoryEntry {
+    pub(crate) speaker: Speaker,
+    pub(crate) text: String,
 }
 
 const SCROLL_STEP: u16 = 1;
@@ -126,6 +128,8 @@ pub async fn run_chat_loop(agent: &mut Agent) -> anyhow::Result<()> {
     // Index into `prompt_history` while recalling with Up/Down; `None` means
     // the prompt input isn't currently showing a recalled entry.
     let mut recall_index: Option<usize> = None;
+
+    let registry = default_registry();
 
     loop {
         terminal.draw(|frame| draw(frame, &history, &input, status.as_deref(), scroll_up))?;
@@ -166,8 +170,22 @@ pub async fn run_chat_loop(agent: &mut Agent) -> anyhow::Result<()> {
                 if line.is_empty() {
                     continue;
                 }
-                if line == "/exit" || line == "/quit" {
-                    break;
+                if line.starts_with('/') {
+                    match registry.dispatch(&line, &mut history) {
+                        Some(CommandOutcome::Exit) => break,
+                        Some(CommandOutcome::Handled) => {
+                            scroll_up = 0;
+                            continue;
+                        }
+                        None => {
+                            history.push(HistoryEntry {
+                                speaker: Speaker::Error,
+                                text: format!("unknown command: {line}"),
+                            });
+                            scroll_up = 0;
+                            continue;
+                        }
+                    }
                 }
 
                 prompt_history.push(line.clone());
