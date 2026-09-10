@@ -14,6 +14,10 @@ use ratatui::Terminal;
 
 use crate::commands::{default_registry, CommandOutcome};
 
+#[cfg(test)]
+#[path = "tui_test.rs"]
+mod tests;
+
 /// Enters raw mode + alt-screen on construction, restores the terminal on
 /// drop (covers normal return, `?` early-return, and panics via the panic
 /// hook installed in `enter`).
@@ -89,7 +93,10 @@ fn markdown_lines(text: &str) -> Vec<Line<'static>> {
                 .into_iter()
                 .map(|span| Span::styled(span.content.into_owned(), convert_style(span.style)))
                 .collect();
-            Line::from(spans)
+            // `tui-markdown` sets heading style on the Line itself (see its
+            // `start_heading`), not per-span — carry it over or headings
+            // render with no color/weight at all.
+            Line::from(spans).style(convert_style(line.style))
         })
         .collect()
 }
