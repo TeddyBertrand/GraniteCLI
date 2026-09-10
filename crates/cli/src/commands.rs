@@ -9,6 +9,7 @@ use crate::args::Provider;
 /// do next.
 pub enum CommandOutcome {
     Exit,
+    PromptApiKey,
     /// Switch to a different provider (model resets to that provider's default).
     SwitchProvider(Provider),
     /// Switch model, keeping the current provider.
@@ -90,6 +91,24 @@ impl SlashCommand for ExitCommand {
     }
 }
 
+/// `/apikey` and `/key` switch the TUI into the full-screen API key setup
+/// view.
+pub struct ApiKeyCommand;
+
+impl SlashCommand for ApiKeyCommand {
+    fn name(&self) -> &str {
+        "apikey"
+    }
+
+    fn aliases(&self) -> &[&str] {
+        &["key"]
+    }
+
+    fn execute(&self, _args: &str) -> CommandOutcome {
+        CommandOutcome::PromptApiKey
+    }
+}
+
 /// `/provider <groq|gemini|ollama>` switches provider (and resets model to
 /// that provider's default).
 pub struct ProviderCommand;
@@ -133,6 +152,7 @@ impl SlashCommand for ModelCommand {
 pub fn default_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
     registry.register(Arc::new(ExitCommand));
+    registry.register(Arc::new(ApiKeyCommand));
     registry.register(Arc::new(ProviderCommand));
     registry.register(Arc::new(ModelCommand));
     registry

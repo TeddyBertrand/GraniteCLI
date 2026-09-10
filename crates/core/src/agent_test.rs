@@ -109,6 +109,29 @@ async fn single_turn_no_tool_call_returns_content() {
 }
 
 #[tokio::test]
+async fn run_without_provider_returns_no_provider_error() {
+    let mut agent = Agent::without_provider("test-model");
+
+    let err = agent.run("hello".to_string()).await.unwrap_err();
+
+    assert!(matches!(err, AgentError::NoProvider));
+    assert!(!agent.has_provider());
+}
+
+#[tokio::test]
+async fn set_provider_lets_run_succeed_afterwards() {
+    let provider = Arc::new(ScriptedProvider::new(vec![Ok(assistant_text("hi there"))]));
+    let mut agent = Agent::without_provider("test-model");
+    assert!(!agent.has_provider());
+
+    agent.set_provider(provider);
+    assert!(agent.has_provider());
+
+    let answer = agent.run("hello".to_string()).await.unwrap();
+    assert_eq!(answer, "hi there");
+}
+
+#[tokio::test]
 async fn tool_call_round_trip_then_final_answer() {
     let provider = Arc::new(ScriptedProvider::new(vec![
         Ok(assistant_tool_call("call_1", "echo", json!({"text": "ping"}))),

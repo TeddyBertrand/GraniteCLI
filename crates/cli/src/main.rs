@@ -72,27 +72,29 @@ fn set_config(key: &str, value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Builds a provider + model pair, independent of any `RunArgs`. `api_key`
-/// precedence: explicit arg > provider-specific env var > config file.
+/// Builds a provider + model pair. `Ok(None)` means the (Groq) provider is
+/// selected but no key could be resolved from arg/env/config — interactive
+/// mode can recover from this via the TUI's API key setup; non-interactive
+/// (`--prompt`) mode must still fail fast on it. `api_key` precedence:
+/// explicit arg > provider-specific env var > config file.
 pub(crate) fn build_provider(
     provider: Provider,
     model: Option<String>,
     api_key: Option<String>,
     cfg: &Config,
-) -> anyhow::Result<(Arc<dyn LlmProvider>, String)> {
+) -> anyhow::Result<Option<(Arc<dyn LlmProvider>, String)>> {
     match provider {
         Provider::Groq => {
             let groq = if let Some(key) = &api_key {
-                provider::groq::GroqProvider::new(key.clone())
+                Some(provider::groq::GroqProvider::new(key.clone()))
             } else if let Ok(groq) = provider::groq::GroqProvider::from_env() {
-                groq
-            } else if let Some(key) = cfg.api_key_for(provider) {
-                provider::groq::GroqProvider::new(key.to_string())
+                Some(groq)
             } else {
-                bail!("no Groq API key: pass --api-key, set GROQ_API_KEY, or run `granite config set groq.api_key <key>`")
+                cfg.api_key_for(provider)
+                    .map(|key| provider::groq::GroqProvider::new(key.to_string()))
             };
             let model = model.unwrap_or_else(|| provider::groq::DEFAULT_MODEL.to_string());
-            Ok((Arc::new(groq), model))
+            Ok(groq.map(|g| (Arc::new(g) as Arc<dyn LlmProvider>, model)))
         }
         Provider::Gemini => bail!("Gemini provider not implemented yet"),
         Provider::Ollama => bail!("Ollama provider not implemented yet"),
@@ -102,17 +104,19 @@ pub(crate) fn build_provider(
 async fn run(args: RunArgs) -> anyhow::Result<()> {
     let cfg = Config::load()?;
     let mut provider_kind = args.provider.unwrap_or(Provider::Groq);
-    let (provider, model) =
-        build_provider(provider_kind, args.model.clone(), args.api_key.clone(), &cfg)?;
-
-    let mut agent = Agent::new(provider, model)
-        .with_tool(Arc::new(ReadFileTool))
-        .with_tool(Arc::new(WriteFileTool))
-        .with_tool(Arc::new(ListDirTool))
-        .with_tool(Arc::new(BashTool::new()));
+    let resolved = build_provider(provider_kind, args.model.clone(), args.api_key.clone(), &cfg)?;
 
     match &args.prompt {
         Some(p) => {
+            let Some((provider, model)) = resolved else {
+                bail!(
+                    "no {} API key: pass --api-key, set the provider's env var, or run `granite config set {}.api_key <key>`",
+                    provider_kind.label(),
+                    provider_kind.config_prefix()
+                );
+            };
+            let mut agent = build_agent(Agent::new(provider, model));
+
             let _alt_screen = tui::AltScreenGuard::enter()?;
             cliclack::intro("granite")?;
             let spinner = cliclack::spinner();
@@ -132,8 +136,35 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
             }
         }
         None => {
+            let model = args
+                .model
+                .clone()
+                .unwrap_or_else(|| provider::groq::DEFAULT_MODEL.to_string());
+            let mut agent = match resolved {
+                Some((provider, model)) => build_agent(Agent::new(provider, model)),
+                None => build_agent(Agent::without_provider(model)),
+            };
+
             let _alt_screen = tui::AltScreenGuard::enter()?;
             tui::run_chat_loop(&mut agent, &cfg, &mut provider_kind).await
         }
     }
+}
+
+/// Builds a provider from an explicit key, e.g. one just typed into the
+/// TUI's API key setup screen.
+pub(crate) fn provider_from_key(provider: Provider, key: String) -> anyhow::Result<Arc<dyn LlmProvider>> {
+    match provider {
+        Provider::Groq => Ok(Arc::new(provider::groq::GroqProvider::new(key))),
+        Provider::Gemini => bail!("Gemini provider not implemented yet"),
+        Provider::Ollama => bail!("Ollama provider not implemented yet"),
+    }
+}
+
+fn build_agent(agent: Agent) -> Agent {
+    agent
+        .with_tool(Arc::new(ReadFileTool))
+        .with_tool(Arc::new(WriteFileTool))
+        .with_tool(Arc::new(ListDirTool))
+        .with_tool(Arc::new(BashTool::new()))
 }

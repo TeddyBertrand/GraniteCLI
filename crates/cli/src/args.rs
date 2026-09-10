@@ -56,12 +56,29 @@ pub enum Provider {
     Ollama,
 }
 
+impl Provider {
+    /// Display label, e.g. for TUI prompts.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Provider::Groq => "Groq",
+            Provider::Gemini => "Gemini",
+            Provider::Ollama => "Ollama",
+        }
+    }
+
+    /// Config key prefix under which this provider's settings live, e.g.
+    /// "groq" for `groq.api_key`.
+    pub fn config_prefix(&self) -> &'static str {
+        match self {
+            Provider::Groq => "groq",
+            Provider::Gemini => "gemini",
+            Provider::Ollama => "ollama",
+        }
+    }
+}
+
 impl std::fmt::Display for Provider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Provider::Groq => write!(f, "groq"),
-            Provider::Gemini => write!(f, "gemini"),
-            Provider::Ollama => write!(f, "ollama"),
-        }
+        write!(f, "{}", self.config_prefix())
     }
 }
