@@ -20,10 +20,13 @@ pub enum AgentError {
 
     #[error("max iterations ({0}) reached without a final answer")]
     MaxIterationsReached(usize),
+
+    #[error("no API key configured for this provider")]
+    NoProvider,
 }
 
 pub struct Agent {
-    provider: Arc<dyn LlmProvider>,
+    provider: Option<Arc<dyn LlmProvider>>,
     tools: HashMap<String, Arc<dyn Tool>>,
     context: ConversationContext,
     model: String,
@@ -33,12 +36,34 @@ pub struct Agent {
 impl Agent {
     pub fn new(provider: Arc<dyn LlmProvider>, model: impl Into<String>) -> Self {
         Self {
-            provider,
+            provider: Some(provider),
             tools: HashMap::new(),
             context: ConversationContext::new(),
             model: model.into(),
             max_iterations: 10,
         }
+    }
+
+    /// Builds an agent with no provider set yet — usable once
+    /// [`Agent::set_provider`] is called.
+    pub fn without_provider(model: impl Into<String>) -> Self {
+        Self {
+            provider: None,
+            tools: HashMap::new(),
+            context: ConversationContext::new(),
+            model: model.into(),
+            max_iterations: 10,
+        }
+    }
+
+    /// Sets (or replaces) the provider used for subsequent turns, e.g. after
+    /// the user supplies an API key mid-session.
+    pub fn set_provider(&mut self, provider: Arc<dyn LlmProvider>) {
+        self.provider = Some(provider);
+    }
+
+    pub fn has_provider(&self) -> bool {
+        self.provider.is_some()
     }
 
     pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
@@ -67,9 +92,10 @@ impl Agent {
     }
 
     async fn chat_with_retry(&self, req: ChatRequest) -> Result<provider::ChatResponse, AgentError> {
+        let provider = self.provider.as_ref().ok_or(AgentError::NoProvider)?;
         let mut attempts = 0;
         loop {
-            match self.provider.chat(req.clone()).await {
+            match provider.chat(req.clone()).await {
                 Ok(resp) => return Ok(resp),
                 Err(ProviderError::Auth) => return Err(AgentError::Provider(ProviderError::Auth)),
                 Err(err @ ProviderError::RateLimited { retry_after }) => {
@@ -112,6 +138,10 @@ impl Agent {
     }
 
     pub async fn run(&mut self, user_input: String) -> Result<String, AgentError> {
+        if self.provider.is_none() {
+            return Err(AgentError::NoProvider);
+        }
+
         self.context.push(Message {
             role: Role::User,
             content: Some(user_input),
