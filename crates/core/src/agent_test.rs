@@ -189,6 +189,74 @@ async fn auth_error_aborts_immediately() {
     assert!(matches!(err, AgentError::Provider(ProviderError::Auth)));
 }
 
+struct FixedConfirmHook(bool);
+
+#[async_trait]
+impl ConfirmHook for FixedConfirmHook {
+    async fn confirm(&self, _request: ConfirmRequest) -> bool {
+        self.0
+    }
+}
+
+#[tokio::test]
+async fn confirm_hook_denial_short_circuits_tool_execution() {
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        Ok(assistant_tool_call("call_1", "echo", json!({"text": "ping"}))),
+        Ok(assistant_text("done")),
+    ]));
+    let mut agent = Agent::new(provider, "test-model")
+        .with_tool(Arc::new(EchoTool))
+        .with_confirm_hook(Arc::new(FixedConfirmHook(false)));
+
+    let answer = agent.run("go".to_string()).await.unwrap();
+
+    assert_eq!(answer, "done");
+    let messages = agent.context().messages();
+    let tool_msg = messages
+        .iter()
+        .find(|m| m.role == Role::Tool)
+        .expect("tool result message pushed to context");
+    assert!(tool_msg.content.as_deref().unwrap().contains("rejected by user"));
+}
+
+#[tokio::test]
+async fn confirm_hook_approval_lets_tool_execute() {
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        Ok(assistant_tool_call("call_1", "echo", json!({"text": "ping"}))),
+        Ok(assistant_text("done")),
+    ]));
+    let mut agent = Agent::new(provider, "test-model")
+        .with_tool(Arc::new(EchoTool))
+        .with_confirm_hook(Arc::new(FixedConfirmHook(true)));
+
+    agent.run("go".to_string()).await.unwrap();
+
+    let messages = agent.context().messages();
+    let tool_msg = messages
+        .iter()
+        .find(|m| m.role == Role::Tool)
+        .expect("tool result message pushed to context");
+    assert_eq!(tool_msg.content.as_deref(), Some("echoed: ping"));
+}
+
+#[tokio::test]
+async fn no_confirm_hook_is_fail_open() {
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        Ok(assistant_tool_call("call_1", "echo", json!({"text": "ping"}))),
+        Ok(assistant_text("done")),
+    ]));
+    let mut agent = Agent::new(provider, "test-model").with_tool(Arc::new(EchoTool));
+
+    agent.run("go".to_string()).await.unwrap();
+
+    let messages = agent.context().messages();
+    let tool_msg = messages
+        .iter()
+        .find(|m| m.role == Role::Tool)
+        .expect("tool result message pushed to context");
+    assert_eq!(tool_msg.content.as_deref(), Some("echoed: ping"));
+}
+
 #[tokio::test]
 async fn max_iterations_reached_when_tool_calls_never_stop() {
     let responses = (0..3)

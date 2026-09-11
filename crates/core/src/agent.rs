@@ -6,6 +6,7 @@ use provider::{ChatRequest, FinishReason, LlmProvider, Message, ProviderError, R
 use thiserror::Error;
 use tools::{Tool, ToolError};
 
+use crate::confirm::{ConfirmHook, ConfirmRequest};
 use crate::context::ConversationContext;
 
 const MAX_PROVIDER_RETRIES: usize = 3;
@@ -31,6 +32,7 @@ pub struct Agent {
     context: ConversationContext,
     model: String,
     max_iterations: usize,
+    confirm_hook: Option<Arc<dyn ConfirmHook>>,
 }
 
 impl Agent {
@@ -41,6 +43,7 @@ impl Agent {
             context: ConversationContext::new(),
             model: model.into(),
             max_iterations: 10,
+            confirm_hook: None,
         }
     }
 
@@ -53,6 +56,7 @@ impl Agent {
             context: ConversationContext::new(),
             model: model.into(),
             max_iterations: 10,
+            confirm_hook: None,
         }
     }
 
@@ -82,6 +86,15 @@ impl Agent {
     pub fn with_max_iterations(mut self, max_iterations: usize) -> Self {
         self.max_iterations = max_iterations;
         self
+    }
+
+    pub fn with_confirm_hook(mut self, hook: Arc<dyn ConfirmHook>) -> Self {
+        self.confirm_hook = Some(hook);
+        self
+    }
+
+    pub fn set_confirm_hook(&mut self, hook: Arc<dyn ConfirmHook>) {
+        self.confirm_hook = Some(hook);
     }
 
     pub fn context(&self) -> &ConversationContext {
@@ -126,11 +139,8 @@ impl Agent {
         }
     }
 
-    async fn dispatch_tool_call(&self, call: &provider::ToolCall) -> Message {
-        let result = match self.tools.get(&call.name) {
-            Some(tool) => tool.execute(call.arguments.clone()).await,
-            None => Err(ToolError::NotFound(call.name.clone())),
-        };
+    async fn execute_tool_call(&self, call: &provider::ToolCall, tool: &Arc<dyn Tool>) -> Message {
+        let result = tool.execute(call.arguments.clone()).await;
 
         let content = match result {
             Ok(output) => output.content,
@@ -140,6 +150,15 @@ impl Agent {
         Message {
             role: Role::Tool,
             content: Some(content),
+            tool_calls: vec![],
+            tool_call_id: Some(call.id.clone()),
+        }
+    }
+
+    fn denied_message(call: &provider::ToolCall, reason: &str) -> Message {
+        Message {
+            role: Role::Tool,
+            content: Some(format!("error: {}", ToolError::Denied(reason.to_string()))),
             tool_calls: vec![],
             tool_call_id: Some(call.id.clone()),
         }
@@ -186,8 +205,43 @@ impl Agent {
                 break;
             }
 
-            let tool_msgs = join_all(message.tool_calls.iter().map(|call| self.dispatch_tool_call(call))).await;
-            for tool_msg in tool_msgs {
+            let mut approved: Vec<(&provider::ToolCall, Arc<dyn Tool>)> = Vec::new();
+            let mut resolved_msgs: Vec<Message> = Vec::new();
+
+            for call in &message.tool_calls {
+                let Some(tool) = self.tools.get(&call.name).cloned() else {
+                    resolved_msgs.push(Message {
+                        role: Role::Tool,
+                        content: Some(format!("error: {}", ToolError::NotFound(call.name.clone()))),
+                        tool_calls: vec![],
+                        tool_call_id: Some(call.id.clone()),
+                    });
+                    continue;
+                };
+
+                let allowed = match &self.confirm_hook {
+                    Some(hook) => {
+                        let request = ConfirmRequest {
+                            tool_name: tool.name().to_string(),
+                            risk: tool.risk(&call.arguments),
+                            detail: tool.describe(&call.arguments),
+                        };
+                        hook.confirm(request).await
+                    }
+                    None => true,
+                };
+
+                if allowed {
+                    approved.push((call, tool));
+                } else {
+                    resolved_msgs.push(Self::denied_message(call, "rejected by user"));
+                }
+            }
+
+            let executed = join_all(approved.iter().map(|(call, tool)| self.execute_tool_call(call, tool))).await;
+            resolved_msgs.extend(executed);
+
+            for tool_msg in resolved_msgs {
                 self.context.push(tool_msg);
             }
         }
