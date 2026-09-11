@@ -1,12 +1,10 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
 use tempfile::tempdir;
 
 use crate::bash::BashTool;
-use crate::traits::{Tool, ToolError};
+use crate::traits::{Tool, ToolError, ToolRisk};
 
 #[tokio::test]
 async fn runs_command_and_captures_stdout() {
@@ -50,28 +48,18 @@ async fn deny_listed_command_is_denied() {
 }
 
 #[tokio::test]
-async fn confirm_hook_can_deny() {
-    let tool = BashTool::new().with_confirm_hook(Arc::new(|_cmd: &str| false));
-    let err = tool
-        .execute(json!({ "command": "echo hi" }))
-        .await
-        .unwrap_err();
-    assert!(matches!(err, ToolError::Denied(_)));
+async fn risk_is_mutating_for_plain_command() {
+    let tool = BashTool::new();
+    assert_eq!(tool.risk(&json!({ "command": "echo hi" })), ToolRisk::Mutating);
 }
 
 #[tokio::test]
-async fn confirm_hook_is_called_with_command_and_can_allow() {
-    let called = Arc::new(AtomicBool::new(false));
-    let called_clone = called.clone();
-    let tool = BashTool::new().with_confirm_hook(Arc::new(move |cmd: &str| {
-        called_clone.store(true, Ordering::SeqCst);
-        cmd == "echo hi"
-    }));
-
-    let out = tool.execute(json!({ "command": "echo hi" })).await.unwrap();
-
-    assert!(called.load(Ordering::SeqCst));
-    assert!(out.content.contains("hi"));
+async fn risk_is_dangerous_for_destructive_command() {
+    let tool = BashTool::new();
+    assert_eq!(
+        tool.risk(&json!({ "command": "sudo rm -r /tmp/whatever" })),
+        ToolRisk::Dangerous
+    );
 }
 
 #[tokio::test]
@@ -132,18 +120,8 @@ async fn invalid_pattern_regex_is_rejected_at_construction() {
 }
 
 #[tokio::test]
-async fn destructive_command_without_confirm_hook_is_denied() {
+async fn destructive_command_runs_directly_gating_is_agent_side() {
     let tool = BashTool::new();
-    let err = tool
-        .execute(json!({ "command": "sudo rm -r /tmp/whatever" }))
-        .await
-        .unwrap_err();
-    assert!(matches!(err, ToolError::Denied(_)));
-}
-
-#[tokio::test]
-async fn destructive_command_with_confirm_hook_runs_when_allowed() {
-    let tool = BashTool::new().with_confirm_hook(Arc::new(|_cmd: &str| true));
     let out = tool
         .execute(json!({ "command": "kill -9 999999" }))
         .await
@@ -152,17 +130,7 @@ async fn destructive_command_with_confirm_hook_runs_when_allowed() {
 }
 
 #[tokio::test]
-async fn destructive_command_with_confirm_hook_denied_when_rejected() {
-    let tool = BashTool::new().with_confirm_hook(Arc::new(|_cmd: &str| false));
-    let err = tool
-        .execute(json!({ "command": "kill -9 999999" }))
-        .await
-        .unwrap_err();
-    assert!(matches!(err, ToolError::Denied(_)));
-}
-
-#[tokio::test]
-async fn non_destructive_command_runs_without_confirm_hook() {
+async fn non_destructive_command_runs() {
     let tool = BashTool::new();
     let out = tool.execute(json!({ "command": "echo hi" })).await.unwrap();
     assert!(out.content.contains("hi"));

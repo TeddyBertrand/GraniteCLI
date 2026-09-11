@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::traits::{Tool, ToolError, ToolOutput};
+use crate::traits::{Tool, ToolError, ToolOutput, ToolRisk};
 
 pub struct ReadFileTool;
 
@@ -26,6 +26,10 @@ impl Tool for ReadFileTool {
             },
             "required": ["path"]
         })
+    }
+
+    fn describe(&self, args: &serde_json::Value) -> String {
+        args.get("path").and_then(|v| v.as_str()).unwrap_or("<invalid args>").to_string()
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput, ToolError> {
@@ -67,6 +71,16 @@ impl Tool for WriteFileTool {
             },
             "required": ["path", "content"]
         })
+    }
+
+    fn risk(&self, _args: &serde_json::Value) -> ToolRisk {
+        ToolRisk::Mutating
+    }
+
+    fn describe(&self, args: &serde_json::Value) -> String {
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("<invalid args>");
+        let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        format!("write {} bytes to {path}:\n```\n{content}\n```", content.len())
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput, ToolError> {
@@ -111,6 +125,10 @@ impl Tool for ListDirTool {
             },
             "required": ["path"]
         })
+    }
+
+    fn describe(&self, args: &serde_json::Value) -> String {
+        args.get("path").and_then(|v| v.as_str()).unwrap_or("<invalid args>").to_string()
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput, ToolError> {

@@ -1,5 +1,4 @@
 use std::process::Stdio;
-use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -7,7 +6,7 @@ use regex::Regex;
 use serde_json::json;
 use tokio::process::Command;
 
-use crate::traits::{Tool, ToolError, ToolOutput};
+use crate::traits::{Tool, ToolError, ToolOutput, ToolRisk};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -54,11 +53,8 @@ fn compile(patterns: &[&str]) -> Vec<Regex> {
         .collect()
 }
 
-pub type ConfirmHook = Arc<dyn Fn(&str) -> bool + Send + Sync>;
-
 pub struct BashTool {
     timeout: Duration,
-    confirm: Option<ConfirmHook>,
     deny_patterns: Vec<Regex>,
     allow_patterns: Vec<Regex>,
     destructive_patterns: Vec<Regex>,
@@ -69,17 +65,11 @@ impl BashTool {
     pub fn new() -> Self {
         Self {
             timeout: DEFAULT_TIMEOUT,
-            confirm: None,
             deny_patterns: compile(DEFAULT_DENY_PATTERNS),
             allow_patterns: Vec::new(),
             destructive_patterns: compile(DESTRUCTIVE_PATTERNS),
             sandbox_dir: None,
         }
-    }
-
-    pub fn with_confirm_hook(mut self, hook: ConfirmHook) -> Self {
-        self.confirm = Some(hook);
-        self
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -168,6 +158,18 @@ impl Tool for BashTool {
         })
     }
 
+    fn risk(&self, args: &serde_json::Value) -> ToolRisk {
+        match args.get("command").and_then(|v| v.as_str()) {
+            Some(command) if self.is_destructive(command) => ToolRisk::Dangerous,
+            _ => ToolRisk::Mutating,
+        }
+    }
+
+    fn describe(&self, args: &serde_json::Value) -> String {
+        let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("<invalid args>");
+        format!("```bash\n{command}\n```")
+    }
+
     async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let command = args
             .get("command")
@@ -178,18 +180,6 @@ impl Tool for BashTool {
 
         if self.sandbox_dir.is_some() {
             Self::check_sandbox_escape(command)?;
-        }
-
-        if self.is_destructive(command) && self.confirm.is_none() {
-            return Err(ToolError::Denied(
-                "destructive command requires a confirmation hook".to_string(),
-            ));
-        }
-
-        if let Some(confirm) = &self.confirm {
-            if !confirm(command) {
-                return Err(ToolError::Denied("rejected by confirmation hook".to_string()));
-            }
         }
 
         let mut cmd = Command::new("sh");
