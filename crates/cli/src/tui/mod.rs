@@ -6,16 +6,24 @@ use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use futures_util::StreamExt;
 use granite_core::agent::Agent;
+use granite_core::ConfirmRequest;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Terminal;
+use tokio::sync::mpsc;
 
 use crate::args::Provider;
 use crate::commands::{default_registry, CommandOutcome};
 use crate::config::Config;
+
+mod confirm;
+mod widgets;
+
+use confirm::{ConfirmMsg, TuiConfirmHook};
+use widgets::{render_box, BoxStyle};
 
 #[cfg(test)]
 #[path = "tui_test.rs"]
@@ -98,7 +106,7 @@ impl tui_markdown::StyleSheet for NoFenceStyleSheet {
 }
 
 const CODE_BORDER: Color = Color::DarkGray;
-const CODE_BG: Color = Color::Rgb(40, 40, 40);
+pub(crate) const CODE_BG: Color = Color::Rgb(40, 40, 40);
 
 fn ratatui_core_lines(text: &str) -> Vec<Line<'static>> {
     let options = tui_markdown::Options::new(NoFenceStyleSheet);
@@ -159,24 +167,6 @@ fn split_code_blocks(text: &str) -> Vec<MarkdownSegment<'_>> {
     segments
 }
 
-const PAD: &str = "    ";
-const RIGHT_MARGIN: usize = 3;
-
-/// Fills the rest of a code-block line with background so the box reads as one
-/// panel, not just an outline around the text. Leaves `RIGHT_MARGIN` columns
-/// unbackgrounded on the right, mirroring the left `PAD`.
-fn pad_bg(mut line: Line<'static>, width: usize) -> Line<'static> {
-    let target_width = width.saturating_sub(RIGHT_MARGIN);
-    let filled = line.width();
-    if filled < target_width {
-        line.spans.push(Span::styled(
-            " ".repeat(target_width - filled),
-            Style::default().bg(CODE_BG),
-        ));
-    }
-    line
-}
-
 /// `+`/`-` prefixed lines in a diff/patch block are diff markup, not syntax to
 /// highlight — color them by prefix instead of running them through syntect.
 fn diff_line_style(line: &str) -> Style {
@@ -192,49 +182,23 @@ fn diff_line_style(line: &str) -> Style {
 
 fn code_block_lines(lang: &str, body: &str, width: usize) -> Vec<Line<'static>> {
     let is_diff = matches!(lang, "diff" | "patch");
-    let fenced = format!("```{lang}\n{body}\n```");
-    let border = Style::default().fg(CODE_BORDER).bg(CODE_BG);
-
-    let mut lines = Vec::new();
-    let header = if lang.is_empty() {
-        "┌─ code ─".to_string()
-    } else {
-        format!("┌─ {lang} ─")
+    let title = if lang.is_empty() { "code".to_string() } else { lang.to_string() };
+    let style = BoxStyle {
+        border_color: CODE_BORDER,
+        bg: CODE_BG,
+        title: Some(title),
     };
-    lines.push(pad_bg(
-        Line::from(vec![Span::raw(PAD), Span::styled(header, border)]),
-        width,
-    ));
-    if is_diff {
-        for source_line in body.lines() {
-            let spans = vec![
-                Span::raw(PAD),
-                Span::styled("│ ", border),
-                Span::styled(source_line.to_string(), diff_line_style(source_line)),
-            ];
-            lines.push(pad_bg(Line::from(spans), width));
-        }
+
+    let body_lines = if is_diff {
+        body.lines()
+            .map(|source_line| Line::styled(source_line.to_string(), diff_line_style(source_line)))
+            .collect()
     } else {
-        for line in ratatui_core_lines(&fenced) {
-            let mut spans = vec![Span::raw(PAD), Span::styled("│ ", border)];
-            spans.extend(
-                line.spans.into_iter().map(|mut span| {
-                    span.style = span.style.bg(CODE_BG);
-                    span
-                }),
-            );
-            lines.push(pad_bg(Line::from(spans), width));
-        }
-    }
-    lines.push(pad_bg(
-        Line::from(vec![
-            Span::raw(PAD),
-            Span::styled("└─".to_string(), border),
-        ]),
-        width,
-    ));
-    lines.push(Line::from(""));
-    lines
+        let fenced = format!("```{lang}\n{body}\n```");
+        ratatui_core_lines(&fenced)
+    };
+
+    render_box(body_lines, &style, width)
 }
 
 fn markdown_lines(text: &str, width: usize) -> Vec<Line<'static>> {
@@ -295,6 +259,9 @@ pub async fn run_chat_loop(
     let mut history: Vec<HistoryEntry> = Vec::new();
     let mut input = String::new();
     let mut status: Option<String> = None;
+
+    let (confirm_tx, mut confirm_rx) = mpsc::unbounded_channel::<ConfirmMsg>();
+    agent.set_confirm_hook(Arc::new(TuiConfirmHook::new(confirm_tx)));
 
     // Lines scrolled up from the bottom of the history panel; 0 auto-follows
     // the latest output. Reset to 0 whenever new content is appended.
@@ -488,7 +455,7 @@ pub async fn run_chat_loop(
                 scroll_up = 0;
                 terminal.draw(|frame| draw(frame, &history, &input, status.as_deref(), scroll_up))?;
 
-                let turn = run_turn(agent, line, &mut events).await;
+                let turn = run_turn(agent, line, &mut events, &mut confirm_rx, &mut terminal, &history).await;
                 match turn {
                     TurnOutcome::Answer(answer) => history.push(HistoryEntry {
                         speaker: Speaker::Agent,
@@ -539,13 +506,51 @@ enum TurnOutcome {
 /// Runs one agent turn, racing it against incoming terminal events so a
 /// Ctrl+C during the turn cancels it (dropping the in-flight future) instead
 /// of exiting the app.
-async fn run_turn(agent: &mut Agent, line: String, events: &mut EventStream) -> TurnOutcome {
-    tokio::select! {
-        result = agent.run(line) => match result {
-            Ok(answer) => TurnOutcome::Answer(answer),
-            Err(err) => TurnOutcome::Error(err.to_string()),
-        },
-        () = wait_for_cancel(events) => TurnOutcome::Cancelled,
+async fn run_turn(
+    agent: &mut Agent,
+    line: String,
+    events: &mut EventStream,
+    confirm_rx: &mut mpsc::UnboundedReceiver<ConfirmMsg>,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    history: &[HistoryEntry],
+) -> TurnOutcome {
+    let agent_fut = agent.run(line);
+    tokio::pin!(agent_fut);
+
+    loop {
+        tokio::select! {
+            result = &mut agent_fut => {
+                return match result {
+                    Ok(answer) => TurnOutcome::Answer(answer),
+                    Err(err) => TurnOutcome::Error(err.to_string()),
+                };
+            }
+            Some((request, reply)) = confirm_rx.recv() => {
+                let approved = prompt_confirm(events, terminal, history, &request).await;
+                let _ = reply.send(approved);
+            }
+            () = wait_for_cancel(events) => return TurnOutcome::Cancelled,
+        }
+    }
+}
+
+async fn prompt_confirm(
+    events: &mut EventStream,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    history: &[HistoryEntry],
+    request: &ConfirmRequest,
+) -> bool {
+    loop {
+        let _ = terminal.draw(|frame| draw_confirm(frame, history, request));
+        let Ok(Some(key)) = next_key(events).await else {
+            return false;
+        };
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => return true,
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => return false,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return false,
+            _ => continue,
+        }
     }
 }
 
@@ -631,20 +636,8 @@ fn draw_api_key_setup(
     frame.set_cursor_position((input_area.x + 1 + input.chars().count() as u16, input_area.y + 1));
 }
 
-fn draw(
-    frame: &mut ratatui::Frame,
-    history: &[HistoryEntry],
-    input: &str,
-    status: Option<&str>,
-    scroll_up: u16,
-) {
-    let [history_area, input_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(frame.area());
-
-    let history_block = Block::default().borders(Borders::ALL).title("granite");
-    let inner_width = history_block.inner(history_area).width as usize;
-
-    let lines: Vec<Line> = history
+fn history_lines(history: &[HistoryEntry], inner_width: usize) -> Vec<Line<'static>> {
+    history
         .iter()
         .flat_map(|entry| {
             let (prefix, color) = match entry.speaker {
@@ -668,7 +661,23 @@ fn draw(
             lines.push(Line::from(""));
             lines
         })
-        .collect();
+        .collect()
+}
+
+fn draw(
+    frame: &mut ratatui::Frame,
+    history: &[HistoryEntry],
+    input: &str,
+    status: Option<&str>,
+    scroll_up: u16,
+) {
+    let [history_area, input_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(frame.area());
+
+    let history_block = Block::default().borders(Borders::ALL).title("granite");
+    let inner_width = history_block.inner(history_area).width as usize;
+
+    let lines = history_lines(history, inner_width);
 
     let inner_height = history_block.inner(history_area).height as usize;
     let bottom_scroll = lines.len().saturating_sub(inner_height) as u16;
@@ -689,4 +698,27 @@ fn draw(
         input_area.x + 1 + input.len() as u16,
         input_area.y + 1,
     ));
+}
+
+fn draw_confirm(frame: &mut ratatui::Frame, history: &[HistoryEntry], request: &ConfirmRequest) {
+    let frame_area = frame.area();
+    let max_confirm_height = frame_area.height.saturating_sub(4).max(7);
+    let confirm_height = confirm::height(request, frame_area.width, max_confirm_height);
+
+    let [history_area, confirm_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(confirm_height)]).areas(frame_area);
+
+    let history_block = Block::default().borders(Borders::ALL).title("granite");
+    let inner_width = history_block.inner(history_area).width as usize;
+    let lines = history_lines(history, inner_width);
+    let inner_height = history_block.inner(history_area).height as usize;
+    let scroll = lines.len().saturating_sub(inner_height) as u16;
+
+    let history_widget = Paragraph::new(lines)
+        .block(history_block)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    frame.render_widget(history_widget, history_area);
+
+    confirm::render(frame, confirm_area, request);
 }

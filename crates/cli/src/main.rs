@@ -6,8 +6,10 @@ mod tui;
 use std::sync::Arc;
 
 use anyhow::bail;
+use async_trait::async_trait;
 use clap::Parser;
 use granite_core::agent::Agent;
+use granite_core::{ConfirmHook, ConfirmRequest};
 use provider::LlmProvider;
 use tools::bash::BashTool;
 use tools::fs::{ListDirTool, ReadFileTool, WriteFileTool};
@@ -115,7 +117,8 @@ async fn run(args: RunArgs) -> anyhow::Result<()> {
                     provider_kind.config_prefix()
                 );
             };
-            let mut agent = build_agent(Agent::new(provider, model));
+            let mut agent =
+                build_agent(Agent::new(provider, model)).with_confirm_hook(Arc::new(OneShotConfirmHook));
 
             let _alt_screen = tui::AltScreenGuard::enter()?;
             cliclack::intro("granite")?;
@@ -158,6 +161,23 @@ pub(crate) fn provider_from_key(provider: Provider, key: String) -> anyhow::Resu
         Provider::Groq => Ok(Arc::new(provider::groq::GroqProvider::new(key))),
         Provider::Gemini => bail!("Gemini provider not implemented yet"),
         Provider::Ollama => bail!("Ollama provider not implemented yet"),
+    }
+}
+
+struct OneShotConfirmHook;
+
+#[async_trait]
+impl ConfirmHook for OneShotConfirmHook {
+    async fn confirm(&self, request: ConfirmRequest) -> bool {
+        let prompt = format!(
+            "{} wants to run ({:?}): {} — allow?",
+            request.tool_name, request.risk, request.detail
+        );
+        tokio::task::spawn_blocking(move || {
+            cliclack::confirm(prompt).initial_value(false).interact().unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false)
     }
 }
 
